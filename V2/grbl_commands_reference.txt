@@ -1,0 +1,90 @@
+Full Name 		GRBL # 	Type 	Units 	Default 	Min 	Max 	Description
+Stepper/Pulse 		0 	Int 	usec 	3 	3 	1000 	Set the stepper motor pulse time
+Stepper/IdleTime 	1 	Int 	msec 	250 	0 	255 	Time before steppers are disabled when idle
+Stepper/StepInvert 	2 	AxisMask 		0 			Axes whose step signals are inverted
+Stepper/DirInvert 	3 	AxisMask 		0 			Axes whose direction signals are inverted
+Stepper/EnableInvert 	4 	Flag 		OFF 			Do not invert (off) or invert (on) all stepper enable signals
+Limits/Invert 		5 	Flag 		ON 			Limit switches
+Probe/Invert 		6 	Flag 		ON 			Probe switch active high (off) or low (on)
+Report/Status 		10 	Int 		1 	0 	2 	Fields to include in real-time reports
+GCode/JunctionDeviation 	11 	Float 		0.01 	0 	10 	Controls motion around sharp corners
+GCode/ArcTolerance 	12 	Float 		0.002 	0 	1 	Controls accuracy of arc tracing
+Report/Inches 		13 	Flag 		OFF 			Report in mm (off) or inches (on)
+Limits/Soft 		20 	Flag 		OFF 			Disable (off) or enable (on) soft limits
+Limits/Hard 		21 	Flag 		OFF 			Disable (off) or enable (on) hard limits
+Homing/Enable 		22 	Flag 		OFF 			Disable (off) or enable (on) homing feature
+Homing/DirInvert 	23 	AxisMask 		3 (XY) 			Homing directions for various axes
+Homing/Feed 		24 	Float 	mm/min 	200 	0 	10000 	Slower rate for homing
+Homing/Seek 		25 	Float 	mm/min 	2000 	0 	10000 	Faster rate for homing
+Homing/Debounce 	26 	Float 	msec 	250 	0 	10000 	Homing switch debounce time
+Homing/Pulloff	 	27 	Float 	mm 	1 	0 	1000 	Homing pulloff distance
+Homing/Squared 			AxisMask 		0 			Axes that are squared during homing
+Homing/MPos 			Float 					Desired Machine Position after homing
+Homing/Cycle0 			AxisMask 					Axis homing order
+Homing/Cycle1 			AxisMask 					Axis homing order
+Homing/Cycle2 			AxisMask 					Axis homing order
+Homing/Cycle3 			AxisMask 					Axis homing order
+Homing/Cycle4 			AxisMask 					Axis homing order
+Homing/Cycle5 			AxisMask 					Axis homing order
+GCode/MaxS 		30 	Float 	depends 	1000 	0 	100000 	Max value for GCode S word
+GCode/MinS 		31 	Float 	depends 	0 	0 	100000 	Minimum value for GCode S word
+GCode/LaserMode 	32 	Flag 		OFF 			Disable (off) or enable (on) Laser Mode
+GCode/Line1 		N1 	String 			0 	255 	First GCode startup line
+GCode/Line0 		N0 	String 			0 	255 	Second GCode startup line
+Spindle/PWM/Frequency 	33 	Float 	cycles/sec 	5000 	0 	100000 	Spindle PWM frequency
+Spindle/PWM/Off 	34 	Float 	percent 	0 	0 	100 	Value to turn spindle off
+Spindle/PWM/Min 	35 	Float 	percent 	0 	0 	100 	Minimum value for running spindle
+Spindle/PWM/Max 	36 	Float 	percent 	100 	0 	100 	Maximum value for running spindle
+Spindle/Enable/Invert 		Flag 		Off 			Inverts the spindle enable output
+Spindle/PWM/Invert 		Flag 		Off 			Inverts the spindle output
+Spindle/Enable/OffWithSpeed 	Flag 		Off 			Enable will be off at 0 RPM Regardless of M3/M4/M5
+Report/StallGuard 		AxisMask 		0 			List of axes for reporting stallguard status
+Spindle/Type 			Enum 		NONE 			Spindle type
+X/StepsPerMm 		100 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for X axis
+X/MaxRate 		110 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for X axis
+X/Acceleration 		120 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for X axis
+X/MaxTravel 		130 	Float 	mm 	300 	1 	100000 	Length of X axis
+X/Current/Run 		140 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for X axis
+X/Current/Hold 		150 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for X axis
+X/Microsteps 		160 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for X axis
+X/StallGuard 		170 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for X axis
+Y/StepsPerMm 		101 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for Y axis
+Y/MaxRate 		111 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for Y axis
+Y/Acceleration 		121 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for Y axis
+Y/MaxTravel 		131 	Float 	mm 	300 	1 	100000 	Length of Y axis
+Y/Current/Run 		141 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for Y axis
+Y/Current/Hold 		151 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for Y axis
+Y/Microsteps 		161 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for Y axis
+Y/StallGuard 		171 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for Y axis
+Z/StepsPerMm 		102 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for Z axis
+Z/MaxRate 		112 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for Z axis
+Z/Acceleration 		122 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for Z axis
+Z/MaxTravel 		132 	Float 	mm 	300 	1 	100000 	Length of Z axis
+Z/Current/Run 		142 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for Z axis
+Z/Current/Hold 		152 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for Z axis
+Z/Microsteps 		162 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for Z axis
+Z/StallGuard 		172 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for Z axis
+A/StepsPerMm 		103 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for A axis
+A/MaxRate 		113 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for A axis
+A/Acceleration 		123 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for A axis
+A/MaxTravel 		133 	Float 	mm 	300 	1 	100000 	Length of A axis
+A/Current/Run 		143 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for A axis
+A/Current/Hold 		153 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for A axis
+A/Microsteps 		163 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for A axis
+A/StallGuard 		173 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for A axis
+B/StepsPerMm 		104 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for B axis
+B/MaxRate 		114 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for B axis
+B/Acceleration 		124 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for B axis
+B/MaxTravel 		134 	Float 	mm 	300 	1 	100000 	Length of B axis
+B/Current/Run 		144 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for B axis
+B/Current/Hold 		154 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for B axis
+B/Microsteps 		164 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for B axis
+B/StallGuard 		174 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for B axis
+C/StepsPerMm 		105 	Float 	steps/mm 	100 	1 	100000 	Steps per mm for C axis
+C/MaxRate 		115 	Float 	mm/min 	1000 	1 	100000 	Maximum speed for C axis
+C/Acceleration 		125 	Float 	mm/sec^2 	200 	1 	100000 	Acceleration for C axis
+C/MaxTravel 		135 	Float 	mm 	300 	1 	100000 	Length of C axis
+C/Current/Run 		145 	Float 	amperes 	0.25 	0 	20 	Trinamic driver run current for C axis
+C/Current/Hold 		155 	Float 	amperes 	0.125 	0.05 	20 	Trinamic driver hold current for C axis
+C/Microsteps 		165 	Int 	microsteps/step 	16 	0 	256 	Trinamic driver microstepping for C axis
+C/StallGuard 		175 	Int 	register value 	16 	-64 	63 	Trinamic driver Stallguard setting for C axis
