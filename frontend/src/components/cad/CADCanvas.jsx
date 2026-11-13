@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import {
   angleBetweenLines, angleOf, arcFrom3, arcStartEndRadius, arcSweep, bbox, catmullRomPath, catmullRomPoints, circumcircle,
   closestOnEntity, cross, dimLinePoints, dist, dot, explodeRect, explodeSlot, filletLines, isDim, keyPoints, mirrorEntity,
-  normRect, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, trimEntity, uid, unit,
+  normRect, applyDimParam, dimLiveData, dimValue, syncDims, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, trimEntity, uid, unit,
 } from './geometry'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
 
@@ -27,7 +27,10 @@ export default function CADCanvas({
   const [pts, setPts] = useState([])
   const [drag, setDrag] = useState(null)
   const [pick, setPick] = useState(null) // fillet: {id, click}
-  const [dimPick, setDimPick] = useState(null) // quota: {e, click}
+  const [dimPick, setDimPick] = useState(null) // quota: {e, click, link}
+  const [editingDim, setEditingDim] = useState(null) // {id, value, screenPos}
+  const entMap = useMemo(() => new Map(entities.map((x) => [x.id, x])), [entities])
+  const liveDim = (e) => (e.targetId && dimLiveData(e, entMap.get(e.targetId))) || e.data
   const [measure, setMeasure] = useState(null) // {first, title, rows, marks}
   const [arrayCfg, setArrayCfg] = useState(null)
   const [hover, setHover] = useState(null)
@@ -115,7 +118,7 @@ export default function CADCanvas({
   // ---------------------------------------------------------------- azioni
   const add = (...ents) => onChange([...entities, ...ents])
   const replace = (ids, news) => onChange([...entities.filter((e) => !ids.includes(e.id)), ...news])
-  const cancel = () => { setPts([]); setPick(null); setDimPick(null); setArrayCfg(null) }
+  const cancel = () => { setPts([]); setPick(null); setDimPick(null); setArrayCfg(null); setEditingDim(null) }
   const selEnts = entities.filter((x) => selected.has(x.id))
 
   useEffect(() => {
@@ -231,7 +234,20 @@ export default function CADCanvas({
     setMeasure({ first: { kind: 'point', p }, title: 'Primo punto', rows: [['X', fmt(p.x, 3)], ['Y', fmt(p.y, 3)]], note: 'Click sul secondo punto', marks: { pts: [p] } })
   }
 
-  const linearDimOf = (l, off) => ({ id: uid(), type: 'dimension', is_construction: true, data: { x1: l.data.x1, y1: l.data.y1, x2: l.data.x2, y2: l.data.y2, off: round3(off) } })
+  // Collegamento parametrico: la prima quota su (entità, parametro) è guida, le successive di riferimento
+  const withDriving = (link) => link && ({ ...link, driving: !entities.some((x) => isDim(x) && x.targetId === link.targetId && x.param === link.param && x.driving !== false) })
+  const linkOfLine = (la) => {
+    if (!la?.src) return null
+    if (la.src.type === 'rect') {
+      const side = la.lines ? la.lines.indexOf(la.e) : -1
+      if (side < 0) return null
+      const d = la.e.data
+      return { targetId: la.src.id, side, param: Math.abs(d.x2 - d.x1) > Math.abs(d.y2 - d.y1) ? 'width' : 'height' }
+    }
+    if (la.src.type === 'line' || la.src.type === 'construction') return { targetId: la.src.id, param: 'length' }
+    return null
+  }
+  const linearDimOf = (l, off, link) => ({ id: uid(), type: 'dimension', is_construction: true, ...(withDriving(link) || {}), data: { x1: l.data.x1, y1: l.data.y1, x2: l.data.x2, y2: l.data.y2, off: round3(off) } })
   const angleDimOf = (l1, c1, l2, c2) => {
     const ang = angleBetweenLines(l1, c1, l2, c2)
     if (!ang) return null
@@ -351,21 +367,22 @@ export default function CADCanvas({
         }
         if (dimPick) {
           const la = lineAt(raw)
-          if (la && sameSeg(la.e, dimPick.e)) add(linearDimOf(dimPick.e, 5))
+          if (la && sameSeg(la.e, dimPick.e)) add(linearDimOf(dimPick.e, 5, dimPick.link))
           else if (la) {
             const d = angleDimOf(dimPick.e, dimPick.click, la.e, raw)
             if (!d) notify('Linee parallele: nessun angolo da quotare')
             else add(d)
-          } else add(linearDimOf(dimPick.e, offsetFrom(dimPick.e, p)))
+          } else add(linearDimOf(dimPick.e, offsetFrom(dimPick.e, p), dimPick.link))
           return setDimPick(null)
         }
         const la = lineAt(raw)
-        if (la) return setDimPick({ e: la.e, click: raw })
+        if (la) return setDimPick({ e: la.e, click: raw, link: linkOfLine(la) })
         const h = hit(raw, geomFilter)
         if (h && (h.e.type === 'circle' || h.e.type === 'arc')) {
           const d = h.e.data
           const ang = round3(angleOf({ x: d.cx, y: d.cy }, raw))
-          return add({ id: uid(), type: 'dim_radial', is_construction: true, data: { cx: d.cx, cy: d.cy, r: d.r, angle: ang, diam: h.e.type === 'circle' ? 1 : 0 } })
+          const link = withDriving({ targetId: h.e.id, param: h.e.type === 'circle' ? 'diameter' : 'radius' })
+          return add({ id: uid(), type: 'dim_radial', is_construction: true, ...link, data: { cx: d.cx, cy: d.cy, r: d.r, angle: ang, diam: h.e.type === 'circle' ? 1 : 0 } })
         }
         return setPts([p])
       }
@@ -463,7 +480,8 @@ export default function CADCanvas({
           return
         }
         if (!selected.has(h.e.id)) { sel = new Set([h.e.id]); setSelected(sel) }
-        return setDrag({ type: 'move', start: p, cur: p, ids: sel })
+        const editDim = isDim(h.e) && h.e.targetId && h.e.driving !== false && h.e.type !== 'dim_angle' ? h.e : null
+        return setDrag({ type: 'move', start: p, cur: p, ids: sel, editDim, sx, sy })
       }
       if (!e.shiftKey) setSelected(new Set())
       return setDrag({ type: 'box', a: raw, b: raw })
@@ -485,7 +503,8 @@ export default function CADCanvas({
   const onMouseUp = () => {
     if (drag?.type === 'move') {
       const dx = drag.cur.x - drag.start.x, dy = drag.cur.y - drag.start.y
-      if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) onChange(entities.map((x) => (drag.ids.has(x.id) ? translate(x, dx, dy) : x)))
+      if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) onChange(syncDims(entities.map((x) => (drag.ids.has(x.id) ? translate(x, dx, dy) : x))))
+      else if (drag.editDim) openDimEditor(drag.editDim)
     } else if (drag?.type === 'box') {
       const minX = Math.min(drag.a.x, drag.b.x), maxX = Math.max(drag.a.x, drag.b.x)
       const minY = Math.min(drag.a.y, drag.b.y), maxY = Math.max(drag.a.y, drag.b.y)
@@ -495,6 +514,33 @@ export default function CADCanvas({
       }
     }
     setDrag(null)
+  }
+
+  // ---------------------------------------------------------------- quote editabili
+  const dimLabelPos = (e) => {
+    const d = liveDim(e)
+    if (e.type === 'dimension') { const q = dimLinePoints(d); const a = toS(q.A), b = toS(q.B); return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+    const c = { x: d.cx, y: d.cy }
+    return toS(d.diam ? polar(c, d.r * 0.45, d.angle) : polar(c, d.r / 2, d.angle))
+  }
+  const openDimEditor = (e) => {
+    if (!entMap.get(e.targetId)) return notify('Entità quotata non trovata: quota non modificabile')
+    const val = dimValue({ ...e, data: liveDim(e) })
+    setEditingDim({ id: e.id, value: String(round3(val)), screenPos: dimLabelPos(e) })
+  }
+  const applyDimEdit = () => {
+    const ed = editingDim
+    setEditingDim(null)
+    if (!ed) return
+    const dim = entMap.get(ed.id)
+    const target = dim && entMap.get(dim.targetId)
+    if (!dim || !target) return
+    const val = parseFloat(String(ed.value).replace(',', '.'))
+    if (!(val > 0)) return notify('La quota deve essere maggiore di 0')
+    if (Math.abs(val - dimValue({ ...dim, data: liveDim(dim) })) < 1e-9) return
+    const data = applyDimParam(target, dim.param, val)
+    if (!data) return notify('Questa quota non può modificare la geometria')
+    onChange(syncDims(entities.map((x) => (x.id === target.id ? { ...x, data } : x))))
   }
 
   const onDoubleClick = () => { if (tool === 'spline' && pts.length) finishSpline(pts) }
@@ -583,14 +629,16 @@ export default function CADCanvas({
     return `M ${a.x} ${a.y} A ${d.r * v.s} ${d.r * v.s} 0 ${sw > 180 ? 1 : 0} 0 ${b.x} ${b.y}`
   }
 
-  const dimText = (x, y, ang, txt, color, key) => {
+  const dimText = (x, y, ang, txt, color, key, reference) => {
     const flip = ang > 90 || ang < -90
-    return <text key={key} x={x} y={y} fill={color} fontSize={12} textAnchor="middle" fontFamily="monospace" paintOrder="stroke" stroke="#121212" strokeWidth={3}
+    return <text key={key} x={x} y={y} fill={color} fontStyle={reference ? 'italic' : undefined} opacity={reference ? 0.75 : 1} fontSize={12} textAnchor="middle" fontFamily="monospace" paintOrder="stroke" stroke="#121212" strokeWidth={3}
       transform={`rotate(${flip ? ang + 180 : ang} ${x} ${y})`}>{txt}</text>
   }
 
   const renderEntity = (e, key, opts = {}) => {
-    const d = e.data
+    const d = isDim(e) && !opts.ghost ? liveDim(e) : e.data
+    const ref = e.driving === false
+    const lbl = (t) => (ref ? `(${t})` : t)
     const isSel = !opts.ghost && selected.has(e.id)
     const stroke = opts.color || (isSel ? COLORS.selected : e.type === 'bridge' ? COLORS.bridge : isDim(e) ? COLORS.dim
       : e.is_construction ? COLORS.construction : hover === e.id ? COLORS.hover : COLORS.normal)
@@ -631,7 +679,7 @@ export default function CADCanvas({
           <g key={key}>
             {q.off ? <><line x1={pa.x} y1={pa.y} x2={ea.x} y2={ea.y} stroke={stroke} strokeWidth={0.8} /><line x1={pb.x} y1={pb.y} x2={eb.x} y2={eb.y} stroke={stroke} strokeWidth={0.8} /></> : null}
             <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} {...common} markerStart="url(#arrow)" markerEnd="url(#arrow)" />
-            {dimText(mx, my - 6, ang, `${fmt(L)} mm`, stroke)}
+            {editingDim?.id !== e.id && dimText(mx, my - 6, ang, lbl(`${fmt(L)} mm`), stroke, undefined, ref)}
           </g>
         )
       }
@@ -644,7 +692,7 @@ export default function CADCanvas({
           <g key={key}>
             <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} {...common} markerStart={d.diam ? 'url(#arrow)' : undefined} markerEnd="url(#arrow)" />
             {!d.diam && <circle cx={tail.x} cy={tail.y} r={2} fill={stroke} />}
-            {dimText(mid.x, mid.y - 6, ang, d.diam ? `Ø ${fmt(2 * d.r)} mm` : `R ${fmt(d.r)} mm`, stroke)}
+            {editingDim?.id !== e.id && dimText(mid.x, mid.y - 6, ang, lbl(d.diam ? `Ø ${fmt(2 * d.r)} mm` : `R ${fmt(d.r)} mm`), stroke, undefined, ref)}
           </g>
         )
       }
@@ -654,7 +702,7 @@ export default function CADCanvas({
         return (
           <g key={key}>
             <path d={arcPath({ cx: d.cx, cy: d.cy, r: d.r, start: d.a1, end: d.a2 })} {...common} markerStart="url(#arrow)" markerEnd="url(#arrow)" />
-            {dimText(t.x, t.y + 4, 0, `${fmt(sw)}°`, stroke)}
+            {dimText(t.x, t.y + 4, 0, lbl(`${fmt(sw)}°`), stroke, undefined, ref)}
           </g>
         )
       }
@@ -879,6 +927,15 @@ export default function CADCanvas({
         {pts.length > 0 && cursor && <span className="text-accent">L {dist(pts[pts.length - 1], cursor.p).toFixed(2)}</span>}
         <span className="text-gray-500">griglia {grid?.g ?? '-'} mm · zoom {(v.s).toFixed(2)} px/mm</span>
       </div>
+      {editingDim && tool === 'select' && (
+        <input type="number" step="0.1" autoFocus value={editingDim.value}
+          onFocus={(ev) => ev.target.select()}
+          onChange={(ev) => setEditingDim({ ...editingDim, value: ev.target.value })}
+          onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Enter') applyDimEdit(); if (ev.key === 'Escape') setEditingDim(null) }}
+          onBlur={applyDimEdit} onMouseDown={stop} onDoubleClick={stop} onWheel={stop}
+          className="absolute z-30 rounded border border-[#22c55e] bg-[#0b0f0c] px-1.5 py-0.5 text-center font-mono text-xs text-white shadow-lg outline-none"
+          style={{ left: editingDim.screenPos.x, top: editingDim.screenPos.y - 8, minWidth: 80, width: 90, transform: 'translate(-50%, -50%)' }} />
+      )}
       <button onClick={fit} onMouseDown={stop} className="absolute bottom-3 right-3 rounded-md border border-line bg-bg-panel px-2.5 py-1 text-xs text-gray-300 hover:text-white">Adatta (H)</button>
     </div>
   )

@@ -603,3 +603,59 @@ export function filletLines(l1, c1, l2, c2, r) {
     arc: { id: uid(), type: 'arc', is_construction: false, data: { cx: round3(C.x), cy: round3(C.y), r, start: round3(a1), end: round3(a2) } },
   }
 }
+
+// --------------------------------------------------------------------------- quote parametriche
+// Quota con { targetId, param, side?, driving } → collegata a un'entità geometrica.
+// param: length (linea) · width/height (lato rettangolo, side = indice in explodeRect) · diameter/radius (cerchio/arco)
+
+// Coordinate aggiornate della quota calcolate dall'entità di riferimento (null se non collegata/non valida)
+export function dimLiveData(dim, target) {
+  if (!dim.targetId || !target) return null
+  const d = dim.data, t = target.data
+  if (dim.type === 'dimension') {
+    if (target.type === 'line' || target.type === 'construction') return { ...d, x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2 }
+    if (target.type === 'rect') {
+      const s = explodeRect(target)[dim.side ?? 0]
+      return s ? { ...d, x1: s.data.x1, y1: s.data.y1, x2: s.data.x2, y2: s.data.y2 } : null
+    }
+  }
+  if (dim.type === 'dim_radial' && (target.type === 'circle' || target.type === 'arc')) return { ...d, cx: t.cx, cy: t.cy, r: t.r }
+  return null
+}
+
+// Valore misurato della quota (mm o gradi)
+export function dimValue(dim) {
+  const d = dim.data
+  if (dim.type === 'dimension') return Math.hypot(d.x2 - d.x1, d.y2 - d.y1)
+  if (dim.type === 'dim_radial') return d.diam ? 2 * d.r : d.r
+  if (dim.type === 'dim_angle') return arcSweep(d.a1, d.a2)
+  return 0
+}
+
+// Nuovi dati dell'entità di riferimento con il parametro impostato a `val` (null se non applicabile)
+export function applyDimParam(target, param, val) {
+  const t = target.data
+  if (!(val > 0)) return null
+  switch (param) {
+    case 'length': {
+      const L = Math.hypot(t.x2 - t.x1, t.y2 - t.y1)
+      if (L < 1e-9) return null
+      return { ...t, x2: round3(t.x1 + (t.x2 - t.x1) / L * val), y2: round3(t.y1 + (t.y2 - t.y1) / L * val) }
+    }
+    case 'width': return target.type === 'rect' ? { ...t, w: round3(val) } : null
+    case 'height': return target.type === 'rect' ? { ...t, h: round3(val) } : null
+    case 'diameter': return { ...t, r: round3(val / 2) }
+    case 'radius': return { ...t, r: round3(val) }
+    default: return null
+  }
+}
+
+// Allinea tutte le quote collegate alle entità di riferimento correnti
+export function syncDims(list) {
+  const byId = new Map(list.map((e) => [e.id, e]))
+  return list.map((e) => {
+    if (!e.targetId) return e
+    const live = dimLiveData(e, byId.get(e.targetId))
+    return live ? { ...e, data: live } : e
+  })
+}

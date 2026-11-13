@@ -8,7 +8,7 @@ import Tooltip from '../common/Tooltip'
 import { TOOL_TIPS } from '../settings/ToolBox'
 import { errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
-import { isDim, layerColor, translate, uid } from './geometry'
+import { isDim, layerColor, syncDims, translate, uid } from './geometry'
 
 const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
@@ -58,7 +58,8 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
 
   useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); Layers.saveEntities(layer.id, latest.current).catch(() => {}) } }, [layer.id])
 
-  const commit = useCallback((next) => {
+  const commit = useCallback((raw) => {
+    const next = syncDims(raw)
     hist.current.past.push(latest.current)
     if (hist.current.past.length > 200) hist.current.past.shift()
     hist.current.future = []
@@ -160,6 +161,9 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                   </div>
                 ))}
               </div>
+              {isDim(selEntity) && (
+                <div className="text-xs text-gray-400">{!selEntity.targetId ? 'Quota libera (non collegata)' : selEntity.driving === false ? 'Quota di riferimento (sola lettura)' : 'Quota guida · click sulla quota per modificarla'}</div>
+              )}
               {selEntity.type === 'spline' && <div className="text-xs text-gray-400">Punti di controllo: <b className="text-gray-200">{selEntity.data.points.length}</b></div>}
               {selEntity.type === 'line' && (
                 <div className="text-xs text-gray-400">Lunghezza: <b className="text-gray-200">{Math.hypot(selEntity.data.x2 - selEntity.data.x1, selEntity.data.y2 - selEntity.data.y1).toFixed(3)} mm</b></div>
