@@ -72,7 +72,7 @@ export default function Project() {
       )}
       <div className="relative min-w-0 flex-1">
         {mode === 'cad' && active ? (
-          <CADView key={active.id} project={project} layer={active} onClose={() => setMode('view')}
+          <CADView key={active.id} project={project} layer={active} layers={layers} onClose={() => setMode('view')}
             onLayerUpdated={updateLayer} onStartCutting={() => setMode('cutting')} />
         ) : mode === 'cutting' && active?.gcode ? (
           <CuttingView key={active.id} project={project} layer={active} onBack={() => setMode('view')} onLayerUpdated={updateLayer} />

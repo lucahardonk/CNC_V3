@@ -8,18 +8,19 @@ import Tooltip from '../common/Tooltip'
 import { TOOL_TIPS } from '../settings/ToolBox'
 import { errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
-import { translate, uid } from './geometry'
+import { isDim, layerColor, translate, uid } from './geometry'
 
-const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°' }
-const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', construction: 'Costruzione' }
+const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
+const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
+const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione' }
 
-export default function CADView({ project, layer, onClose, onLayerUpdated, onStartCutting }) {
+export default function CADView({ project, layer, layers = [], onClose, onLayerUpdated, onStartCutting }) {
   const { settings, tools, materials, notify } = useStore()
   const [entities, setEntities] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [selected, setSelected] = useState(new Set())
   const [tool, setTool] = useState('line')
-  const [options, setOptions] = useState({ filletRadius: 3, bridgeWidth: settings?.cutting?.bridge_width || 4 })
+  const [options, setOptions] = useState({ filletRadius: 3, slotWidth: 5, arcRadius: 10, bridgeWidth: settings?.cutting?.bridge_width || 4 })
   const [saveState, setSaveState] = useState('saved')
   const [ctx, setCtx] = useState(null)
   const [genOpen, setGenOpen] = useState(false)
@@ -33,6 +34,18 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
       setEntities(ents); latest.current = ents; setLoaded(true)
     }).catch((e) => notify(errMsg(e), 'error'))
   }, [layer.id])
+
+  const [otherLayerEntities, setOther] = useState([])
+  const layerKey = layers.map((l) => `${l.id}:${l.entity_count}`).join('|')
+  useEffect(() => {
+    let alive = true
+    const others = layers.map((l, i) => ({ l, color: layerColor(i) })).filter(({ l }) => l.id !== layer.id)
+    Promise.all(others.map(({ l, color }) => Layers.entities(l.id)
+      .then((list) => ({ layerName: l.name, color, entities: list.filter((e) => !e.is_construction).map(({ id, type, data }) => ({ id, type, data })) }))
+      .catch(() => null)))
+      .then((res) => { if (alive) setOther(res.filter(Boolean)) })
+    return () => { alive = false }
+  }, [layer.id, layerKey])
 
   const save = useCallback(async () => {
     clearTimeout(saveTimer.current)
@@ -84,12 +97,12 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
   }, [selected, commit, settings])
 
   const toggleConstruction = () => {
-    commit(latest.current.map((e) => (selected.has(e.id) && e.type !== 'bridge' && e.type !== 'dimension' ? { ...e, is_construction: !e.is_construction } : e)))
+    commit(latest.current.map((e) => (selected.has(e.id) && e.type !== 'bridge' && !isDim(e) ? { ...e, is_construction: !e.is_construction } : e)))
   }
 
   const selEntity = selected.size === 1 ? entities.find((e) => selected.has(e.id)) : null
   const updateSel = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)))
-  const cutEntities = entities.filter((e) => !e.is_construction && !['dimension', 'bridge'].includes(e.type))
+  const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
 
   return (
@@ -106,10 +119,7 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
         <Button size="xs" variant="ghost" icon={Undo2} onClick={undo} title="Annulla (Ctrl+Z)" />
         <Button size="xs" variant="ghost" icon={Redo2} onClick={redo} title="Ripeti (Ctrl+Y)" />
         <div className="mx-2 h-5 w-px bg-line" />
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">Raggio raccordo
-          <input type="number" min="0.1" step="0.5" className="input w-16 py-1" value={options.filletRadius} onChange={(e) => setOptions({ ...options, filletRadius: Number(e.target.value) || 0.1 })} /> mm
-        </label>
-        <label className="ml-3 flex items-center gap-1.5 text-xs text-gray-400">Largh. ponticello
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">Largh. ponticello
           <input type="number" min="0.5" step="0.5" className="input w-16 py-1" value={options.bridgeWidth} onChange={(e) => setOptions({ ...options, bridgeWidth: Number(e.target.value) || 1 })} /> mm
         </label>
         <div className="ml-auto flex items-center gap-2">
@@ -118,12 +128,20 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
-        <Toolbar tool={tool} setTool={setTool} onCopy={duplicate} canCopy={selected.size > 0} />
+        <Toolbar tool={tool} setTool={setTool} onCopy={duplicate} canCopy={selected.size > 0} hasSelection={selected.size > 0} />
         <div className="relative min-w-0 flex-1">
+          {CTX_FIELDS[tool] && (
+            <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-bg-card/95 px-3 py-1.5 text-xs text-gray-300 shadow-lg">
+              <span className="text-gray-400">{CTX_FIELDS[tool][1]}</span>
+              <input type="number" min="0.1" step="0.5" className="input w-20 py-1" value={options[CTX_FIELDS[tool][0]]}
+                onChange={(e) => setOptions((o) => ({ ...o, [CTX_FIELDS[tool][0]]: e.target.value === '' ? '' : Number(e.target.value) }))} />
+              <span>mm</span>
+            </div>
+          )}
           {loaded && (
             <CADCanvas entities={entities} onChange={commit} selected={selected} setSelected={setSelected} tool={tool} setTool={setTool}
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
-              onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} />
+              onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} />
           )}
         </div>
         <aside className="w-60 shrink-0 overflow-y-auto border-l border-line bg-bg-panel p-3 text-sm">
@@ -131,10 +149,10 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-white">{TYPE_NAMES[selEntity.type] || selEntity.type}</span>
-                {selEntity.is_construction && selEntity.type !== 'dimension' && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
+                {selEntity.is_construction && !isDim(selEntity) && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {Object.keys(selEntity.data).map((k) => (
+                {Object.keys(selEntity.data).filter((k) => typeof selEntity.data[k] === 'number').map((k) => (
                   <div key={k}>
                     <span className="label">{FIELD_LABELS[k] || k}</span>
                     <input type="number" step="0.1" className="input py-1" value={selEntity.data[k]}
@@ -142,11 +160,12 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
                   </div>
                 ))}
               </div>
+              {selEntity.type === 'spline' && <div className="text-xs text-gray-400">Punti di controllo: <b className="text-gray-200">{selEntity.data.points.length}</b></div>}
               {selEntity.type === 'line' && (
                 <div className="text-xs text-gray-400">Lunghezza: <b className="text-gray-200">{Math.hypot(selEntity.data.x2 - selEntity.data.x1, selEntity.data.y2 - selEntity.data.y1).toFixed(3)} mm</b></div>
               )}
               <div className="flex flex-wrap gap-1.5">
-                {!['bridge', 'dimension'].includes(selEntity.type) && <Button size="xs" icon={Repeat} onClick={toggleConstruction}>{selEntity.is_construction ? 'Normale' : 'Costruzione'}</Button>}
+                {selEntity.type !== 'bridge' && !isDim(selEntity) && <Button size="xs" icon={Repeat} onClick={toggleConstruction}>{selEntity.is_construction ? 'Normale' : 'Costruzione'}</Button>}
                 <Button size="xs" icon={Copy} onClick={duplicate}>Duplica</Button>
                 <Button size="xs" icon={Trash2} className="text-red-400" onClick={del}>Elimina</Button>
               </div>
@@ -184,7 +203,7 @@ export default function CADView({ project, layer, onClose, onLayerUpdated, onSta
             {[
               ['Elimina', () => del()],
               ['Duplica', () => duplicate()],
-              ...(!['bridge', 'dimension'].includes(ctx.entity.type) ? [[ctx.entity.is_construction ? 'Converti in normale' : 'Converti in costruzione', toggleConstruction]] : []),
+              ...(ctx.entity.type !== 'bridge' && !isDim(ctx.entity) ? [[ctx.entity.is_construction ? 'Converti in normale' : 'Converti in costruzione', toggleConstruction]] : []),
             ].map(([l, fn]) => (
               <button key={l} className="block w-full px-3 py-1.5 text-left text-gray-200 hover:bg-bg-hover" onClick={() => { fn(); setCtx(null) }}>{l}</button>
             ))}

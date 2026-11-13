@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CheckCircle2, Circle, Download, Eye, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
 import Tooltip from '../common/Tooltip'
+import { layerColor } from './geometry'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 
 export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, onCut, onAdd, onDelete, onRename, onMove }) {
@@ -24,6 +25,7 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
               className={`group cursor-pointer rounded-lg border p-2.5 transition ${active ? 'border-accent/70 bg-accent/5' : 'border-line bg-bg hover:border-gray-600'}`}>
               <div className="flex items-center gap-2">
                 <span className="w-5 text-center font-mono text-xs text-gray-500">{i + 1}</span>
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: layerColor(i) }} title="Colore layer nel CAD" />
                 {editing === l.id ? (
                   <input autoFocus className="input py-0.5 text-sm" value={name} onClick={(e) => e.stopPropagation()}
                     onChange={(e) => setName(e.target.value)} onBlur={() => { onRename(l.id, name); setEditing(null) }}

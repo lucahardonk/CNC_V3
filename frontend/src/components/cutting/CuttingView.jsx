@@ -47,8 +47,6 @@ export default function CuttingView({ project, layer, onBack, onLayerUpdated }) 
   const play = act(async () => { setConfirmPlay(false); await Grbl.sendLayer(layer.id) })
   const zero = (a) => act(async () => { await Grbl.zero(a); notify(`Zero ${a.toUpperCase()} impostato`, 'success') })
 
-  const b = parsed.bounds
-  const outOfStock = b && (b.minX < -project.stock_x / 2 - 0.01 || b.maxX > project.stock_x / 2 + 0.01 || b.minY < -project.stock_y / 2 - 0.01 || b.maxY > project.stock_y / 2 + 0.01)
   const pos = grbl.wpos || [0, 0, 0]
 
   return (
@@ -69,7 +67,6 @@ export default function CuttingView({ project, layer, onBack, onLayerUpdated }) 
         <div className="pointer-events-none absolute left-3 top-3 space-y-1 rounded-md bg-black/60 px-3 py-2 font-mono text-xs text-gray-300">
           <div>X {pos[0].toFixed(3)}</div><div>Y {pos[1].toFixed(3)}</div><div>Z {pos[2].toFixed(3)}</div>
         </div>
-        {outOfStock && <div className="absolute right-3 top-3 rounded-md border border-yellow-500/50 bg-yellow-950/80 px-3 py-1.5 text-xs text-yellow-200">⚠ Il percorso esce dai limiti dello stock</div>}
         {grbl.simulated && <div className="absolute right-3 top-12 rounded-md border border-yellow-500/40 bg-black/70 px-3 py-1 text-[11px] text-yellow-300">Modalità simulazione: nessuna macchina collegata</div>}
       </div>
       <div className="flex shrink-0 items-center gap-4 border-t border-line bg-bg-panel px-4 py-3">

@@ -127,7 +127,6 @@ def profile_paths(region, open_lines, operation: str, radius: float) -> tuple[li
     paths: list[Path] = []
     if operation == "profile_on":
         paths += [Path(r) for r in _rings(_polys(region), 1.0)]
-        paths += [Path(list(l.coords), closed=False) for l in open_lines]
     elif operation == "profile_outside":
         paths += [Path(r) for r in _rings(_polys(region.buffer(radius, quad_segs=16, join_style=1)) if region else [], 1.0)]
     elif operation == "profile_inside":
@@ -135,9 +134,13 @@ def profile_paths(region, open_lines, operation: str, radius: float) -> tuple[li
         if region is not None and (inner is None or inner.is_empty):
             warnings.append("Forma troppo piccola per l'utensile: profilo interno vuoto.")
         paths += [Path(r) for r in _rings(_polys(inner), -1.0)]
-    if open_lines and operation != "profile_on":
-        warnings.append(f"{len(open_lines)} linee aperte ignorate (solo 'Profilo sul centro' le segue). Chiudi le forme.")
+    # Le linee aperte vengono sempre seguite sulla linea (centro fresa), mai interno/esterno
+    paths += open_line_paths(open_lines)
     return paths, warnings
+
+
+def open_line_paths(open_lines) -> list[Path]:
+    return [Path(list(l.coords), closed=False) for l in open_lines if l.length > EPS]
 
 
 def pocket_paths(region, radius: float, step: float, direction: str) -> tuple[list[Path], list[str]]:
@@ -265,6 +268,9 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params) -> Result:
 
     if p.operation == "pocket":
         paths, w = pocket_paths(region, radius, max(0.05, p.step_over * p.tool_diameter), p.pocket_direction)
+        if open_lines:
+            w = [x for x in w if region is not None]  # senza forme chiuse basta seguire le linee aperte
+            paths += open_line_paths(open_lines)
     else:
         paths, w = profile_paths(region, open_lines, p.operation, radius)
     warnings += w
