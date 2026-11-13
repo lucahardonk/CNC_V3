@@ -293,6 +293,7 @@ export function bbox(e) {
       return bboxOfPts(ellipsePoints(d, 72))
     case 'slot': return bboxOfPts(slotPoints(d, 24))
     case 'spline': return bboxOfPts(d.points?.length ? catmullRomPoints(d.points, 8) : [{ x: 0, y: 0 }])
+    case 'constraint': return { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
     default: return { minX: Math.min(d.x1, d.x2), minY: Math.min(d.y1, d.y2), maxX: Math.max(d.x1, d.x2), maxY: Math.max(d.y1, d.y2) }
   }
 }
@@ -481,6 +482,8 @@ export function normRect(p1, p2) {
 
 // --------------------------------------------------------------------------- fillet
 // l1, l2: entità linea; c1, c2: punti di click (lato da mantenere). Ritorna {l1, l2, arc} o null.
+// Estremi delle linee a 1e-4 mm, arco a piena precisione: i punti di tangenza combaciano (vincoli automatici)
+const r4 = (v) => Math.round(v * 1e4) / 1e4
 export function filletLines(l1, c1, l2, c2, r) {
   const A1 = { x: l1.data.x1, y: l1.data.y1 }, A2 = { x: l1.data.x2, y: l1.data.y2 }
   const B1 = { x: l2.data.x1, y: l2.data.y1 }, B2 = { x: l2.data.x2, y: l2.data.y2 }
@@ -503,14 +506,14 @@ export function filletLines(l1, c1, l2, c2, r) {
   const C = add(P, mul(bis, r / Math.sin(theta / 2)))
   const upd = (l, s, T) => {
     const d = { ...l.data }
-    if (s.far === 'start') { d.x2 = round3(T.x); d.y2 = round3(T.y) } else { d.x1 = round3(T.x); d.y1 = round3(T.y) }
+    if (s.far === 'start') { d.x2 = r4(T.x); d.y2 = r4(T.y) } else { d.x1 = r4(T.x); d.y1 = r4(T.y) }
     return { ...l, data: d }
   }
   let a1 = angleOf(C, T1), a2 = angleOf(C, T2)
   if (arcSweep(a1, a2) > 180) [a1, a2] = [a2, a1]
   return {
     l1: upd(l1, s1, T1), l2: upd(l2, s2, T2),
-    arc: { id: uid(), type: 'arc', is_construction: false, data: { cx: round3(C.x), cy: round3(C.y), r, start: round3(a1), end: round3(a2) } },
+    arc: { id: uid(), type: 'arc', is_construction: false, data: { cx: C.x, cy: C.y, r, start: a1, end: a2 } },
   }
 }
 
@@ -573,7 +576,7 @@ export function syncDims(list) {
 
 // --------------------------------------------------------------------------- nodi (vertici + contatti)
 export const NODE_TOL = 0.01 // mm: tolleranza per contatti/tangenze (copre gli arrotondamenti a 3 decimali)
-const trimmable = (o) => !isDim(o) && o.type !== 'bridge'
+const trimmable = (o) => !isDim(o) && o.type !== 'bridge' && o.type !== 'constraint'
 
 // Estremi "naturali" di un'entità (vertici, giunzioni, estremi di curve aperte)
 export function entityEnds(e) {

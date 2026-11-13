@@ -9,10 +9,11 @@ import { TOOL_TIPS } from '../settings/ToolBox'
 import { errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 import { isDim, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
+import { acceptGeometry, fillDimValues, isConstraint, packEnt, pruneRefs, solveCommit, unpackEnt } from './constraints'
 
 const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
-const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione' }
+const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione', constraint: 'Vincolo di coincidenza' }
 
 export default function CADView({ project, layer, layers = [], onClose, onLayerUpdated, onStartCutting }) {
   const { settings, tools, materials, notify } = useStore()
@@ -31,7 +32,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
 
   useEffect(() => {
     Layers.entities(layer.id).then((list) => {
-      const ents = list.map(({ id, type, data, is_construction }) => ({ id, type, data, is_construction }))
+      const ents = list.map(unpackEnt)
       setEntities(ents); latest.current = ents; setLoaded(true)
     }).catch((e) => notify(errMsg(e), 'error'))
   }, [layer.id])
@@ -52,15 +53,23 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     clearTimeout(saveTimer.current)
     setSaveState('saving')
     try {
-      await Layers.saveEntities(layer.id, latest.current)
+      await Layers.saveEntities(layer.id, latest.current.map(packEnt))
       setSaveState('saved')
     } catch (e) { setSaveState('error'); notify(`Salvataggio fallito: ${errMsg(e)}`, 'error') }
   }, [layer.id])
 
-  useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); Layers.saveEntities(layer.id, latest.current).catch(() => {}) } }, [layer.id])
+  useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); Layers.saveEntities(layer.id, latest.current.map(packEnt)).catch(() => {}) } }, [layer.id])
 
-  const commit = useCallback((raw) => {
-    const next = syncDims(raw)
+  // opts.fixed: entità/punti toccati dall'utente → il solver muove il resto per rispettare vincoli e quote guida.
+  // Senza opts.fixed (disegno, taglio, raccordo…) la geometria disegnata vince e i vincoli rotti vengono rimossi.
+  const commit = useCallback((raw, opts = {}) => {
+    let next = pruneRefs(syncDims(raw))
+    if (opts.fixed) {
+      const r = solveCommit(fillDimValues(next), opts.fixed, opts)
+      if (r.rejected) return notify('Quota incompatibile con i vincoli esistenti: modifica annullata (elimina un vincolo o una quota)', 'error')
+      next = syncDims(r.list)
+      if (r.err > 1e-3) notify('Vincoli/quote incompatibili: geometria non risolta del tutto', 'error')
+    } else next = acceptGeometry(next)
     hist.current.past.push(latest.current)
     if (hist.current.past.length > 200) hist.current.past.shift()
     hist.current.future = []
@@ -69,7 +78,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     setSaveState('dirty')
     clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(save, 700)
-  }, [save])
+  }, [save, notify])
 
   const undo = useCallback(() => {
     const prev = hist.current.past.pop()
@@ -94,12 +103,12 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   const duplicate = useCallback(() => {
     if (!selected.size) return
     const off = Math.max(5, (settings?.ui?.grid_size || 1) * 10)
-    const copies = latest.current.filter((e) => selected.has(e.id)).map((e) => ({ ...translate(e, off, -off), id: uid() }))
+    const copies = latest.current.filter((e) => selected.has(e.id) && !isConstraint(e)).map((e) => ({ ...translate(e, off, -off), id: uid() }))
     commit([...latest.current, ...copies]); setSelected(new Set(copies.map((c) => c.id)))
   }, [selected, commit, settings])
 
   const toggleConstruction = () => {
-    commit(latest.current.map((e) => (selected.has(e.id) && e.type !== 'bridge' && !isDim(e) ? { ...e, is_construction: !e.is_construction } : e)))
+    commit(latest.current.map((e) => (selected.has(e.id) && e.type !== 'bridge' && !isDim(e) && !isConstraint(e) ? { ...e, is_construction: !e.is_construction } : e)))
   }
 
   const selEntity = selected.size === 1 ? entities.find((e) => selected.has(e.id)) : null
@@ -108,7 +117,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     if (!ln) return
     const data = lineConstrained(ln.data, kind, ref)
     if (!data) return notify('Impossibile applicare il vincolo (linea di lunghezza nulla)')
-    commit(latest.current.map((e) => (e.id === id ? { ...e, data } : e)))
+    commit(latest.current.map((e) => (e.id === id ? { ...e, data } : e)), { fixed: [id] })
   }
   const onPickParallel = (refLine) => {
     const id = parallelFor
@@ -117,7 +126,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     if (refLine.id === id) return notify('Scegli una linea diversa da quella selezionata')
     constrainLine(id, 'parallel', refLine.data)
   }
-  const updateSel = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)))
+  const updateSel = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)), { fixed: [selEntity.id] })
   const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
 
@@ -165,7 +174,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-white">{TYPE_NAMES[selEntity.type] || selEntity.type}</span>
-                {selEntity.is_construction && !isDim(selEntity) && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
+                {selEntity.is_construction && !isDim(selEntity) && !isConstraint(selEntity) && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {Object.keys(selEntity.data).filter((k) => typeof selEntity.data[k] === 'number').map((k) => (
@@ -177,8 +186,13 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                 ))}
               </div>
               {isDim(selEntity) && (
-                <div className="text-xs text-gray-400">{!selEntity.targetId ? 'Quota libera (non collegata)' : selEntity.driving === false ? 'Quota di riferimento (sola lettura)' : 'Quota guida · click sulla quota per modificarla'}</div>
+                <div className="text-xs text-gray-400">{!(selEntity.targetId || selEntity.pa || selEntity.la) ? 'Quota libera (non collegata)' : selEntity.driving === false ? 'Quota di riferimento (sola lettura)' : 'Quota guida · click sulla quota per modificarla'}</div>
               )}
+              {isConstraint(selEntity) && (
+                <div className="text-xs leading-relaxed text-gray-400">I due punti restano sovrapposti (cardine): muovendo una figura l'altra la segue.<br />
+                  <b className="text-gray-300">{pointName(selEntity.data.a, entities)}</b> ≡ <b className="text-gray-300">{pointName(selEntity.data.b, entities)}</b><br />Canc o Elimina per rimuovere il vincolo.</div>
+              )}
+              {isDim(selEntity) && selEntity.driving !== false && selEntity.value > 0 && <div className="text-xs text-gray-400">Valore imposto: <b className="text-gray-200">{(+selEntity.value).toFixed(selEntity.type === 'dim_angle' ? 1 : 2)}{selEntity.type === 'dim_angle' ? '°' : ' mm'}</b></div>}
               {selEntity.type === 'spline' && <div className="text-xs text-gray-400">Punti di controllo: <b className="text-gray-200">{selEntity.data.points.length}</b></div>}
               {(selEntity.type === 'line' || selEntity.type === 'construction') && (
                 <div>
@@ -194,8 +208,8 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                 <div className="text-xs text-gray-400">Lunghezza: <b className="text-gray-200">{Math.hypot(selEntity.data.x2 - selEntity.data.x1, selEntity.data.y2 - selEntity.data.y1).toFixed(3)} mm</b></div>
               )}
               <div className="flex flex-wrap gap-1.5">
-                {selEntity.type !== 'bridge' && !isDim(selEntity) && <Button size="xs" icon={Repeat} onClick={toggleConstruction}>{selEntity.is_construction ? 'Normale' : 'Costruzione'}</Button>}
-                <Button size="xs" icon={Copy} onClick={duplicate}>Duplica</Button>
+                {selEntity.type !== 'bridge' && !isDim(selEntity) && !isConstraint(selEntity) && <Button size="xs" icon={Repeat} onClick={toggleConstruction}>{selEntity.is_construction ? 'Normale' : 'Costruzione'}</Button>}
+                {!isConstraint(selEntity) && <Button size="xs" icon={Copy} onClick={duplicate}>Duplica</Button>}
                 <Button size="xs" icon={Trash2} className="text-red-400" onClick={del}>Elimina</Button>
               </div>
             </div>
@@ -214,12 +228,14 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
               <div className="text-sm font-semibold text-white">Proprietà</div>
               <p>Seleziona un'entità per modificarne i parametri.</p>
               <div className="rounded-md border border-line bg-bg p-2 leading-relaxed">
-                <div>Entità: <b className="text-gray-200">{entities.length}</b></div>
+                <div>Entità: <b className="text-gray-200">{entities.filter((e) => !isConstraint(e)).length}</b></div>
+                <div>Vincoli di coincidenza: <b className="text-gray-200">{entities.filter(isConstraint).length}</b></div>
                 <div>Da tagliare: <b className="text-gray-200">{cutEntities.length}</b></div>
                 <div>Ponticelli: <b className="text-gray-200">{entities.filter((e) => e.type === 'bridge').length}</b></div>
               </div>
               <p className="leading-relaxed">Origine (0,0) = centro dello stock. Il bordo verde tratteggiato è il pezzo grezzo ({project.stock_x}×{project.stock_y} mm).</p>
               <p className="leading-relaxed"><span className="kbd">Alt</span> disattiva lo snap · <span className="kbd">Shift</span> orto · <span className="kbd">Ctrl+Z</span> annulla · <span className="kbd">Canc</span> elimina</p>
+              <p className="leading-relaxed">Trascina un punto chiave per spostare la figura (o stirare l'estremo di una linea/spline): rilasciato su un altro punto o sull'origine crea un vincolo di coincidenza (quadratino verde).</p>
               {layer.gcode && <p className="flex items-center gap-1 text-accent"><Check size={13} /> G-code presente ({OPERATION_NAMES[layer.operation]})</p>}
             </div>
           )}
@@ -232,7 +248,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             {[
               ['Elimina', () => del()],
               ['Duplica', () => duplicate()],
-              ...(ctx.entity.type !== 'bridge' && !isDim(ctx.entity) ? [[ctx.entity.is_construction ? 'Converti in normale' : 'Converti in costruzione', toggleConstruction]] : []),
+              ...(ctx.entity.type !== 'bridge' && !isDim(ctx.entity) && !isConstraint(ctx.entity) ? [[ctx.entity.is_construction ? 'Converti in normale' : 'Converti in costruzione', toggleConstruction]] : []),
             ].map(([l, fn]) => (
               <button key={l} className="block w-full px-3 py-1.5 text-left text-gray-200 hover:bg-bg-hover" onClick={() => { fn(); setCtx(null) }}>{l}</button>
             ))}
@@ -362,6 +378,14 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
       </div>
     </Modal>
   )
+}
+
+const PT_NAMES = { p1: 'inizio', p2: 'fine', m: 'centro', c: 'centro', s: 'inizio', e: 'fine', o: '' }
+function pointName(r, entities) {
+  if (r.id === '__origin') return 'Origine'
+  const e = entities.find((x) => x.id === r.id)
+  const n = PT_NAMES[r.ref] ?? (/^v\d/.test(r.ref) ? 'vertice ' + (+r.ref.slice(1) + 1) : /^i\d/.test(r.ref) ? 'punto ' + (+r.ref.slice(1) + 1) : r.ref)
+  return `${TYPE_NAMES[e?.type] || '?'} ${n}`.trim()
 }
 
 const Stat = ({ k, v }) => (<div><div className="text-[10px] uppercase text-gray-400">{k}</div><div className="font-mono font-semibold text-white">{v}</div></div>)
