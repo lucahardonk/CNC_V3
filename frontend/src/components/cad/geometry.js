@@ -474,100 +474,6 @@ export function normRect(p1, p2) {
 }
 
 // --------------------------------------------------------------------------- trim
-// Trim di una polilinea campionata (ellisse/spline). I pezzi rimanenti diventano spline.
-function trimPolyline(e, pts, closed, pt, all) {
-  const cum = [0]
-  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]))
-  const total = cum[cum.length - 1]
-  if (total < EPS) return []
-  const param = (q) => {
-    let best = null
-    for (let i = 0; i < pts.length - 1; i++) {
-      const c = closestOnPrim({ kind: 'seg', a: pts[i], b: pts[i + 1] }, q)
-      if (!best || c.d < best.d) best = { d: c.d, s: cum[i] + c.t * (cum[i + 1] - cum[i]) }
-    }
-    return best.s
-  }
-  const self = { ...e, type: 'spline', data: { points: pts } }
-  const ss = [...new Set(intersectionsWith({ ...self, id: e.id }, all).map(param)
-    .filter((s) => closed || (s > 1e-4 && s < total - 1e-4)).map((s) => +s.toFixed(6)))].sort((a, b) => a - b)
-  const sc = param(pt)
-  const piece = (a, b) => { // pezzo tra le ascisse a→b (b può superare total se chiuso)
-    const out = []
-    const at = (s) => {
-      s = closed ? ((s % total) + total) % total : s
-      let i = cum.findIndex((c) => c >= s); if (i <= 0) i = 1
-      const t = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1)
-      return add(pts[i - 1], mul(sub(pts[i], pts[i - 1]), t))
-    }
-    const step = Math.max(total / 200, (b - a) / 60)
-    for (let s = a; s < b; s += step) out.push(rp(at(s)))
-    out.push(rp(at(b)))
-    return out.length >= 2 ? { id: uid(), type: 'spline', is_construction: e.is_construction, data: { points: out } } : null
-  }
-  if (closed) {
-    if (ss.length < 2) return []
-    const i = ss.findIndex((s) => s > sc)
-    const hi = i === -1 ? ss[0] : ss[i]
-    const lo = i <= 0 ? ss[ss.length - 1] : ss[i - 1]
-    const end = lo < hi ? lo + total : lo
-    return [piece(hi, end)].filter(Boolean)
-  }
-  let lo = 0, hi = total
-  for (const s of ss) { if (s < sc) lo = s; else { hi = s; break } }
-  return [lo > 0 ? piece(0, lo) : null, hi < total ? piece(hi, total) : null].filter(Boolean)
-}
-
-// Ritorna la lista di entità che sostituisce `e` dopo il trim al punto `pt`.
-// Rimuove solo il tratto compreso tra le due intersezioni più vicine al click;
-// se l'entità non interseca nessun'altra entità viene eliminata per intero.
-export function trimEntity(e, pt, all) {
-  const others = all.filter((o) => o.id !== e.id)
-  const inter = intersectionsWith(e, others)
-  const d = e.data
-  if (e.type === 'line') {
-    if (!inter.length) return []
-    const a = { x: d.x1, y: d.y1 }, b = { x: d.x2, y: d.y2 }
-    const ab = sub(b, a), L2 = dot(ab, ab)
-    if (L2 < EPS) return []
-    const tc = Math.max(0, Math.min(1, dot(sub(pt, a), ab) / L2))
-    const ts = [...new Set(inter.map((p) => dot(sub(p, a), ab) / L2).filter((t) => t > 1e-6 && t < 1 - 1e-6).map((t) => +t.toFixed(9)))].sort((x, y) => x - y)
-    let lo = 0, hi = 1
-    for (const t of ts) { if (t < tc) lo = t; else { hi = t; break } }
-    const out = []
-    const P = (t) => add(a, mul(ab, t))
-    if (lo > 0) { const q = P(lo); out.push({ ...e, id: uid(), data: { x1: d.x1, y1: d.y1, x2: round3(q.x), y2: round3(q.y) } }) }
-    if (hi < 1) { const q = P(hi); out.push({ ...e, id: uid(), data: { x1: round3(q.x), y1: round3(q.y), x2: d.x2, y2: d.y2 } }) }
-    return out
-  }
-  if (e.type === 'circle' || e.type === 'arc') {
-    if (!inter.length) return []
-    const c = { x: d.cx, y: d.cy }
-    const start = e.type === 'arc' ? d.start : 0
-    const sweep = e.type === 'arc' ? arcSweep(d.start, d.end) : 360
-    const rel = (p) => norm360(angleOf(c, p) - start)
-    const rc = rel(pt)
-    if (e.type === 'circle') {
-      // NB: nessun filtro sugli estremi (un'intersezione a 0° è valida); 360° ≡ 0°
-      const rs = [...new Set(inter.map(rel).map((r) => (r > 360 - 1e-4 ? 0 : +r.toFixed(6))))].sort((x, y) => x - y)
-      if (rs.length < 2) return []
-      const i = rs.findIndex((r) => r > rc)
-      const hi = i === -1 ? rs[0] : rs[i]
-      const lo = i <= 0 ? rs[rs.length - 1] : rs[i - 1]
-      return [{ ...e, id: uid(), type: 'arc', data: { cx: d.cx, cy: d.cy, r: d.r, start: round3(norm360(hi)), end: round3(norm360(lo)) } }]
-    }
-    const rs = [...new Set(inter.map(rel).filter((r) => r > 1e-4 && r < sweep - 1e-4).map((r) => +r.toFixed(6)))].sort((x, y) => x - y)
-    let lo = 0, hi = sweep
-    for (const r of rs) { if (r < rc) lo = r; else { hi = r; break } }
-    const out = []
-    if (lo > 0) out.push({ ...e, id: uid(), data: { ...d, end: round3(norm360(start + lo)) } })
-    if (hi < sweep) out.push({ ...e, id: uid(), data: { ...d, start: round3(norm360(start + hi)) } })
-    return out
-  }
-  if (e.type === 'ellipse') return inter.length ? trimPolyline(e, ellipsePoints(d, 144), true, pt, others) : []
-  if (e.type === 'spline') return inter.length ? trimPolyline(e, catmullRomPoints(d.points, 20), false, pt, others) : []
-  return [e]
-}
 
 // --------------------------------------------------------------------------- fillet
 // l1, l2: entità linea; c1, c2: punti di click (lato da mantenere). Ritorna {l1, l2, arc} o null.
@@ -655,7 +561,228 @@ export function syncDims(list) {
   const byId = new Map(list.map((e) => [e.id, e]))
   return list.map((e) => {
     if (!e.targetId) return e
+    if (!byId.has(e.targetId)) { const { targetId, param, side, driving, ...rest } = e; return rest } // entità rimossa → quota libera
     const live = dimLiveData(e, byId.get(e.targetId))
     return live ? { ...e, data: live } : e
   })
+}
+
+// --------------------------------------------------------------------------- nodi (vertici + contatti)
+export const NODE_TOL = 0.01 // mm: tolleranza per contatti/tangenze (copre gli arrotondamenti a 3 decimali)
+const trimmable = (o) => !isDim(o) && o.type !== 'bridge'
+
+// Estremi "naturali" di un'entità (vertici, giunzioni, estremi di curve aperte)
+export function entityEnds(e) {
+  const d = e.data
+  switch (e.type) {
+    case 'line': case 'construction': return [{ x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }]
+    case 'rect': return rectLines(d).map((s) => s.a)
+    case 'arc': return [polar({ x: d.cx, y: d.cy }, d.r, d.start), polar({ x: d.cx, y: d.cy }, d.r, d.end)]
+    case 'slot': { const s = slotParts(d); return [s.segs[0].a, s.segs[0].b, s.segs[1].a, s.segs[1].b] }
+    case 'spline': { const p = d.points || []; return p.length ? [p[0], p[p.length - 1]] : [] }
+    default: return []
+  }
+}
+
+// Intersezioni tolleranti tra due primitive (include tangenze entro `tol`)
+const onPrim = (p, q, tol) => closestOnPrim(p, q).d <= tol
+function tolIntersect(p, q, tol) {
+  let cand = []
+  if (p.kind === 'seg' && q.kind === 'seg') {
+    const r = sub(p.b, p.a), s = sub(q.b, q.a), den = cross(r, s)
+    if (Math.abs(den) > 1e-12 * (len(r) * len(s) || 1)) cand = [add(p.a, mul(r, cross(sub(q.a, p.a), s) / den))]
+  } else if (p.kind === 'seg' || q.kind === 'seg') {
+    const sg = p.kind === 'seg' ? p : q, c = p.kind === 'seg' ? q : p
+    const u = unit(sub(sg.b, sg.a)), foot = add(sg.a, mul(u, dot(sub(c.c, sg.a), u)))
+    const h = dist(foot, c.c)
+    if (h <= c.r + tol) {
+      const k = Math.sqrt(Math.max(0, c.r * c.r - h * h))
+      cand = k < tol ? [h > EPS ? add(c.c, mul(unit(sub(foot, c.c)), c.r)) : foot] : [add(foot, mul(u, k)), sub(foot, mul(u, k))]
+    }
+  } else {
+    const D = dist(p.c, q.c)
+    if (D > EPS && D <= p.r + q.r + tol && D >= Math.abs(p.r - q.r) - tol) {
+      const x = (D * D + p.r * p.r - q.r * q.r) / (2 * D)
+      const h = Math.sqrt(Math.max(0, p.r * p.r - x * x))
+      const u = unit(sub(q.c, p.c)), m = add(p.c, mul(u, x))
+      cand = h < tol ? [m] : [{ x: m.x - u.y * h, y: m.y + u.x * h }, { x: m.x + u.y * h, y: m.y - u.x * h }]
+    }
+  }
+  return cand.filter((pt) => onPrim(p, pt, tol) && onPrim(q, pt, tol))
+}
+
+const bboxHit = (a, b, tol) => a.minX <= b.maxX + tol && b.minX <= a.maxX + tol && a.minY <= b.maxY + tol && b.minY <= a.maxY + tol
+
+// Punti di contatto dell'entità `e` con le altre: intersezioni, tangenze e contatti a T (estremi sull'entità)
+export function contactPoints(e, others, tol = NODE_TOL) {
+  const out = []
+  const pe = primitives(e), be = bbox(e)
+  for (const o of others) {
+    if (o === e || o.id === e.id || !trimmable(o) || !bboxHit(be, bbox(o), tol)) continue
+    const po = primitives(o)
+    for (const a of pe) for (const b of po) out.push(...tolIntersect(a, b, tol))
+    for (const q of entityEnds(o)) if (closestOnEntity(e, q).d <= tol) out.push(q)
+    for (const q of entityEnds(e)) if (closestOnEntity(o, q).d <= tol) out.push(q)
+  }
+  return out
+}
+
+const dedupe = (pts, tol) => {
+  const out = []
+  for (const p of pts) if (!out.some((q) => dist(p, q) <= tol)) out.push(p)
+  return out
+}
+
+// Tutti i nodi del disegno (vertici + contatti), per la visualizzazione
+export function computeNodes(entities, tol = NODE_TOL) {
+  const geo = entities.filter(trimmable)
+  const pts = []
+  geo.forEach((e, i) => {
+    pts.push(...entityEnds(e))
+    pts.push(...contactPoints(e, geo.slice(i + 1), tol))
+  })
+  return dedupe(pts, tol * 5)
+}
+
+// --------------------------------------------------------------------------- trim a nodi
+// Pezzo di polilinea campionata tra le ascisse a→b
+function polyTools(pts, closed) {
+  const cum = [0]
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]))
+  const total = cum[cum.length - 1]
+  const param = (q) => {
+    let best = null
+    for (let i = 0; i < pts.length - 1; i++) {
+      const c = closestOnPrim({ kind: 'seg', a: pts[i], b: pts[i + 1] }, q)
+      if (!best || c.d < best.d) best = { d: c.d, s: cum[i] + c.t * (cum[i + 1] - cum[i]) }
+    }
+    return best ? best.s : 0
+  }
+  const at = (s) => {
+    s = closed ? ((s % total) + total) % total : Math.max(0, Math.min(total, s))
+    let i = cum.findIndex((c) => c >= s); if (i <= 0) i = 1
+    const t = (s - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1)
+    return add(pts[i - 1], mul(sub(pts[i], pts[i - 1]), t))
+  }
+  // pA/pB: punti esatti dei nodi agli estremi (per garantire la continuità con la geometria vicina)
+  const piece = (a, b, pA, pB) => {
+    const out = [rp(pA || at(a))]
+    const step = Math.max(total / 200, (b - a) / 60)
+    for (let s = a + step; s < b - step * 0.25; s += step) out.push(rp(at(s)))
+    out.push(rp(pB || at(b)))
+    return out.length >= 2 ? out : null
+  }
+  return { cum, total, param, at, piece }
+}
+
+// Trim basato su nodi. Ritorna { keep: [entità], removed: entità|null }.
+// Rimuove il tratto tra i due nodi più vicini al click; senza nodi interni rimuove tutta l'entità.
+export function trimAt(e, pt, all, tol = NODE_TOL) {
+  const others = all.filter((o) => o.id !== e.id)
+  const contacts = dedupe(contactPoints(e, others, tol), tol)
+  const d = e.data
+  const mk = (type, data) => ({ ...e, id: uid(), type, data })
+  const whole = { keep: [], removed: e }
+  if (e.type === 'line' || e.type === 'construction') {
+    const a = { x: d.x1, y: d.y1 }, b = { x: d.x2, y: d.y2 }, ab = sub(b, a), L = len(ab)
+    if (L < EPS) return whole
+    const u = mul(ab, 1 / L)
+    const tc = Math.max(0, Math.min(L, dot(sub(pt, a), u)))
+    const ns = contacts.map((p) => ({ p, s: dot(sub(p, a), u) })).filter((n) => n.s > tol && n.s < L - tol).sort((x, y) => x.s - y.s)
+    let lo = null, hi = null
+    for (const n of ns) { if (n.s < tc) lo = n; else { hi = n; break } }
+    const A = lo ? rp(lo.p) : a, B = hi ? rp(hi.p) : b
+    const keep = []
+    if (lo) keep.push(mk(e.type, { x1: d.x1, y1: d.y1, x2: A.x, y2: A.y }))
+    if (hi) keep.push(mk(e.type, { x1: B.x, y1: B.y, x2: d.x2, y2: d.y2 }))
+    return { keep, removed: mk(e.type, { x1: A.x, y1: A.y, x2: B.x, y2: B.y }) }
+  }
+  if (e.type === 'circle' || e.type === 'arc') {
+    const c = { x: d.cx, y: d.cy }
+    const start = e.type === 'arc' ? d.start : 0
+    const sweep = e.type === 'arc' ? arcSweep(d.start, d.end) : 360
+    const rel = (p) => norm360(angleOf(c, p) - start)
+    const atol = deg(tol / Math.max(d.r, EPS))
+    const rc = rel(pt)
+    if (e.type === 'circle') {
+      const rs = [...new Set(contacts.map(rel).map((r) => (r > 360 - atol ? 0 : +r.toFixed(6))))].sort((x, y) => x - y)
+      const uniq = rs.filter((r, i) => i === 0 || r - rs[i - 1] > atol)
+      if (uniq.length < 2) return whole
+      const i = uniq.findIndex((r) => r > rc)
+      const hi = i === -1 ? uniq[0] : uniq[i]
+      const lo = i <= 0 ? uniq[uniq.length - 1] : uniq[i - 1]
+      return {
+        keep: [mk('arc', { cx: d.cx, cy: d.cy, r: d.r, start: round3(norm360(hi)), end: round3(norm360(lo)) })],
+        removed: mk('arc', { cx: d.cx, cy: d.cy, r: d.r, start: round3(norm360(lo)), end: round3(norm360(hi)) }),
+      }
+    }
+    const rs = contacts.map(rel).filter((r) => r > atol && r < sweep - atol).sort((x, y) => x - y)
+    let lo = 0, hi = sweep
+    for (const r of rs) { if (r < rc) lo = r; else { hi = r; break } }
+    if (lo === 0 && hi === sweep) return whole
+    const keep = []
+    if (lo > 0) keep.push(mk('arc', { ...d, end: round3(norm360(start + lo)) }))
+    if (hi < sweep) keep.push(mk('arc', { ...d, start: round3(norm360(start + hi)) }))
+    return { keep, removed: mk('arc', { ...d, start: round3(norm360(start + lo)), end: round3(norm360(start + hi)) }) }
+  }
+  if (e.type === 'ellipse' || e.type === 'spline') {
+    const closed = e.type === 'ellipse'
+    const pts = closed ? ellipsePoints(d, 144) : catmullRomPoints(d.points || [], 20)
+    const T = polyTools(pts, closed)
+    if (T.total < EPS) return whole
+    const sp = (points) => (points ? mk('spline', { points }) : null)
+    const ns = contacts.map((p) => ({ p, s: T.param(p) }))
+      .filter((n) => closed || (n.s > tol && n.s < T.total - tol)).sort((x, y) => x.s - y.s)
+      .filter((n, i, arr) => i === 0 || n.s - arr[i - 1].s > tol)
+    const sc = T.param(pt)
+    if (closed) {
+      if (ns.length < 2) return whole
+      const i = ns.findIndex((n) => n.s > sc)
+      const hi = i === -1 ? ns[0] : ns[i]
+      const lo = i <= 0 ? ns[ns.length - 1] : ns[i - 1]
+      const keepEnd = lo.s <= hi.s ? lo.s + T.total : lo.s
+      const remEnd = hi.s >= lo.s ? hi.s : hi.s + T.total
+      return { keep: [sp(T.piece(hi.s, keepEnd, hi.p, lo.p))].filter(Boolean), removed: sp(T.piece(lo.s, remEnd, lo.p, hi.p)) }
+    }
+    let lo = null, hi = null
+    for (const n of ns) { if (n.s < sc) lo = n; else { hi = n; break } }
+    if (!lo && !hi) return whole
+    const P0 = d.points[0], P1 = d.points[d.points.length - 1]
+    const keep = [lo ? sp(T.piece(0, lo.s, P0, lo.p)) : null, hi ? sp(T.piece(hi.s, T.total, hi.p, P1)) : null].filter(Boolean)
+    return { keep, removed: sp(T.piece(lo ? lo.s : 0, hi ? hi.s : T.total, lo ? lo.p : P0, hi ? hi.p : P1)) }
+  }
+  return { keep: [e], removed: null }
+}
+
+// Compatibilità: entità che sostituiscono `e` dopo il trim
+export function trimEntity(e, pt, all) { return trimAt(e, pt, all).keep }
+
+// Trim di qualunque entità (rect/asola vengono esplose e si taglia solo il lato cliccato).
+// Ritorna { removeIds, add, removed } oppure null.
+export function trimClick(e, pt, all) {
+  if (e.type === 'rect' || e.type === 'slot') {
+    const parts = e.type === 'rect' ? explodeRect(e) : explodeSlot(e)
+    const near = parts.reduce((b, l) => { const c = closestOnEntity(l, pt); return !b || c.d < b.d ? { l, d: c.d } : b }, null).l
+    const siblings = parts.filter((l) => l !== near)
+    const r = trimAt(near, pt, [...all.filter((x) => x.id !== e.id), ...siblings])
+    return { removeIds: [e.id], add: [...siblings, ...r.keep], removed: r.removed }
+  }
+  const r = trimAt(e, pt, all)
+  return { removeIds: [e.id], add: r.keep, removed: r.removed }
+}
+
+// Vincoli rapidi su una linea (mantengono punto iniziale e lunghezza)
+export function lineConstrained(d, kind, ref) {
+  const L = Math.hypot(d.x2 - d.x1, d.y2 - d.y1)
+  if (L < EPS) return null
+  let ux, uy
+  if (kind === 'horizontal') { ux = d.x2 >= d.x1 ? 1 : -1; uy = 0 }
+  else if (kind === 'vertical') { ux = 0; uy = d.y2 >= d.y1 ? 1 : -1 }
+  else if (kind === 'parallel' && ref) {
+    const rl = Math.hypot(ref.x2 - ref.x1, ref.y2 - ref.y1)
+    if (rl < EPS) return null
+    ux = (ref.x2 - ref.x1) / rl; uy = (ref.y2 - ref.y1) / rl
+    if (ux * (d.x2 - d.x1) + uy * (d.y2 - d.y1) < 0) { ux = -ux; uy = -uy } // verso più vicino all'originale
+  } else return null
+  return { ...d, x2: round3(d.x1 + ux * L), y2: round3(d.y1 + uy * L) }
 }

@@ -3,12 +3,15 @@ import { X } from 'lucide-react'
 import {
   angleBetweenLines, angleOf, arcFrom3, arcStartEndRadius, arcSweep, bbox, catmullRomPath, catmullRomPoints, circumcircle,
   closestOnEntity, cross, dimLinePoints, dist, dot, explodeRect, explodeSlot, filletLines, isDim, keyPoints, mirrorEntity,
-  normRect, applyDimParam, dimLiveData, dimValue, syncDims, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, trimEntity, uid, unit,
+  normRect, applyDimParam, dimLiveData, dimValue, syncDims, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, computeNodes, trimClick, uid, unit,
 } from './geometry'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
 
 const COLORS = { normal: '#e5e7eb', selected: '#3b82f6', hover: '#93c5fd', construction: '#6b7280', bridge: '#f97316', dim: '#facc15', preview: '#22c55e', measure: '#22d3ee' }
 const fmt = (v, n = 2) => Number(v).toFixed(n)
+// Appunti condivisi tra layer (vivono finché la pagina è aperta)
+let CLIPBOARD = null // { ents, base }
+const isTrimmable = (e) => ['line', 'construction', 'rect', 'circle', 'arc', 'ellipse', 'slot', 'spline'].includes(e.type)
 const isLineLike = (e) => e.type === 'line' || e.type === 'construction' || e.type === 'rect'
 const sameSeg = (a, b) => {
   const A = a.data, B = b.data, eq = (x, y) => Math.abs(x - y) < 1e-6
@@ -18,7 +21,7 @@ const lineLen = (l) => Math.hypot(l.data.x2 - l.data.x1, l.data.y2 - l.data.y1)
 
 export default function CADCanvas({
   entities, onChange, selected, setSelected, tool, setTool, stock, ui, options, onContextMenu, notify,
-  onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [],
+  onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [], pickLine = null,
 }) {
   const wrap = useRef(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
@@ -29,9 +32,11 @@ export default function CADCanvas({
   const [pick, setPick] = useState(null) // fillet: {id, click}
   const [dimPick, setDimPick] = useState(null) // quota: {e, click, link}
   const [editingDim, setEditingDim] = useState(null) // {id, value, screenPos}
+  const nodeList = useMemo(() => (tool === 'trim' ? computeNodes(entities) : []), [entities, tool])
   const entMap = useMemo(() => new Map(entities.map((x) => [x.id, x])), [entities])
   const liveDim = (e) => (e.targetId && dimLiveData(e, entMap.get(e.targetId))) || e.data
   const [measure, setMeasure] = useState(null) // {first, title, rows, marks}
+  const [pasting, setPasting] = useState(null) // { ents, base } durante Ctrl+V
   const [arrayCfg, setArrayCfg] = useState(null)
   const [hover, setHover] = useState(null)
   const space = useRef(false)
@@ -118,7 +123,7 @@ export default function CADCanvas({
   // ---------------------------------------------------------------- azioni
   const add = (...ents) => onChange([...entities, ...ents])
   const replace = (ids, news) => onChange([...entities.filter((e) => !ids.includes(e.id)), ...news])
-  const cancel = () => { setPts([]); setPick(null); setDimPick(null); setArrayCfg(null); setEditingDim(null) }
+  const cancel = () => { setPts([]); setPick(null); setDimPick(null); setArrayCfg(null); setEditingDim(null); setPasting(null) }
   const selEnts = entities.filter((x) => selected.has(x.id))
 
   useEffect(() => {
@@ -403,17 +408,10 @@ export default function CADCanvas({
         return setPts([])
       }
       case 'trim': {
-        const h = hit(raw, (x) => ['line', 'rect', 'circle', 'arc', 'ellipse', 'slot', 'spline'].includes(x.type))
+        const h = hit(raw, isTrimmable)
         if (!h) return
-        let target = h.e, others = entities, extra = []
-        if (h.e.type === 'rect' || h.e.type === 'slot') {
-          const parts = h.e.type === 'rect' ? explodeRect(h.e) : explodeSlot(h.e)
-          const near = parts.reduce((b, l) => { const c = closestOnEntity(l, raw); return !b || c.d < b.d ? { l, d: c.d } : b }, null).l
-          target = near
-          extra = parts.filter((l) => l !== near)
-          others = [...entities.filter((x) => x.id !== h.e.id), ...extra]
-        }
-        return replace([h.e.id], [...extra, ...trimEntity(target, h.c.point, others)])
+        const r = trimClick(h.e, h.c.point, entities)
+        return r && replace(r.removeIds, r.add)
       }
       case 'mirror': {
         if (!selected.size) { notify('Seleziona prima le entità da specchiare'); return setTool('select') }
@@ -469,6 +467,13 @@ export default function CADCanvas({
     }
     if (e.button !== 0) return
     const { p } = snap(raw, e)
+    if (pasting) return placePaste(p)
+    if (pickLine) {
+      const la = lineAt(raw)
+      if (la) pickLine(la.e)
+      else notify('Click su una linea di riferimento (Esc per annullare)')
+      return
+    }
     if (tool === 'select') {
       const h = hit(raw)
       if (h) {
@@ -514,6 +519,27 @@ export default function CADCanvas({
       }
     }
     setDrag(null)
+  }
+
+  // ---------------------------------------------------------------- copia / incolla
+  // Copie con nuovi id; le quote collegate a entità copiate restano collegate alle copie
+  const pasteCopies = (clip, p) => {
+    const dx = round3(p.x - clip.base.x), dy = round3(p.y - clip.base.y)
+    const ids = new Map(clip.ents.map((x) => [x.id, uid()]))
+    return clip.ents.map((x) => {
+      const c = { ...translate(x, dx, dy), id: ids.get(x.id) }
+      if (c.targetId) {
+        if (ids.has(c.targetId)) c.targetId = ids.get(c.targetId)
+        else { delete c.targetId; delete c.param; delete c.side; delete c.driving }
+      }
+      return c
+    })
+  }
+  const placePaste = (p) => {
+    const copies = pasteCopies(pasting, p)
+    onChange(syncDims([...entities, ...copies]))
+    setSelected(new Set(copies.map((c) => c.id)))
+    setPasting(null)
   }
 
   // ---------------------------------------------------------------- quote editabili
@@ -578,12 +604,28 @@ export default function CADCanvas({
       if (e.code === 'Space') { space.current = true; e.preventDefault(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); return e.shiftKey ? onRedo() : onUndo() }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); return onRedo() }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+        if (!selEnts.length) return
+        e.preventDefault()
+        const bs = selEnts.map(bbox)
+        const base = { x: (Math.min(...bs.map((b) => b.minX)) + Math.max(...bs.map((b) => b.maxX))) / 2, y: (Math.min(...bs.map((b) => b.minY)) + Math.max(...bs.map((b) => b.maxY))) / 2 }
+        CLIPBOARD = { ents: JSON.parse(JSON.stringify(selEnts)), base }
+        return notify(`${selEnts.length} entità copiate · Ctrl+V per incollare`)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+        if (!CLIPBOARD?.ents.length) return notify('Niente da incollare: seleziona e premi Ctrl+C')
+        e.preventDefault()
+        cancel()
+        return setPasting(CLIPBOARD)
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); return onDuplicate() }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); return setSelected(new Set(entities.map((x) => x.id))) }
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'Enter' && tool === 'spline' && pts.length) { e.preventDefault(); return finishSpline(pts) }
       if (e.key === 'Escape') {
-        if (pts.length || pick || dimPick || arrayCfg) cancel()
+        if (pasting) setPasting(null)
+        else if (pickLine) pickLine(null)
+        else if (pts.length || pick || dimPick || arrayCfg) cancel()
         else if (measure) setMeasure(null)
         else if (selected.size) setSelected(new Set())
         else setTool('select')
@@ -722,7 +764,14 @@ export default function CADCanvas({
     const pv = (e, k = '_pv', o = {}) => renderEntity({ id: '_pv', ...e }, k, { color: COLORS.preview, ...o })
     const guide = (a, b, k = '_g') => pv({ type: 'line', is_construction: true, data: { x1: a.x, y1: a.y, x2: b.x, y2: b.y } }, k)
     const c0 = pts[0]
+    if (pasting) return <g>{pasteCopies(pasting, p).map((x, i) => renderEntity(x, '_paste' + i, { color: COLORS.preview, dash: '5 4' }))}</g>
+    if (pickLine) { const la = lineAt(cursor.raw); return la && renderEntity(la.e, '_pl', { color: '#f472b6', width: 2.5 }) }
     switch (tool) {
+      case 'trim': {
+        const h = hit(cursor.raw, isTrimmable)
+        const r = h && trimClick(h.e, h.c.point, entities)
+        return r?.removed && renderEntity({ ...r.removed, id: '_trim', is_construction: false }, '_trim', { color: '#ef4444', width: 3, dash: '6 4' })
+      }
       case 'line': case 'construction':
         return c0 && pv({ type: 'line', is_construction: tool === 'construction', data: { x1: c0.x, y1: c0.y, x2: p.x, y2: p.y } })
       case 'line_midpoint':
@@ -809,6 +858,7 @@ export default function CADCanvas({
   }
 
   const moveOffset = drag?.type === 'move' ? { dx: drag.cur.x - drag.start.x, dy: drag.cur.y - drag.start.y } : null
+  const nodes = tool === 'trim' ? nodeList : []
   const origin = toS({ x: 0, y: 0 })
   const stockTL = toS({ x: -stock.x / 2, y: stock.y / 2 })
   const hintText = {
@@ -828,7 +878,7 @@ export default function CADCanvas({
     ellipse: ['1/3 · Click centro', '2/3 · Click estremo asse X (raggio e rotazione)', '3/3 · Click per il semiasse Y'][pts.length],
     slot_center: pts.length ? `Click estremo (centro semicerchio) · larghezza ${options.slotWidth} mm` : 'Click centro dell\'asola',
     spline: pts.length ? `${pts.length} punti · click per aggiungere · Invio / doppio click / tasto destro per confermare · Esc annulla` : 'Click primo punto della spline',
-    trim: 'Click sul tratto da eliminare (senza intersezioni elimina tutta la geometria)',
+    trim: 'Punti arancioni = vertici e contatti · click sul tratto da eliminare (in rosso): si taglia tra i 2 punti più vicini, senza punti interni si elimina tutta la linea',
     mirror: selected.size ? (pts.length ? "Click secondo punto dell'asse" : "Click primo punto dell'asse") : 'Seleziona prima le entità',
     mirror_on_line: selected.size ? `Click su una linea esistente come asse (${selected.size} entità)` : 'Seleziona prima le entità',
     array_circular: arrayCfg?.center ? 'Imposta quantità e angolo nel pannello, poi Applica (click per spostare il centro)' : 'Click centro di rotazione',
@@ -872,6 +922,7 @@ export default function CADCanvas({
         {dimPick && renderEntity(dimPick.e, '_dpick', { color: '#f472b6', width: 2.5 })}
         {measureMarks()}
         {preview()}
+        {nodes.map((n, i) => { const s = toS(n); return <circle key={'nd' + i} cx={s.x} cy={s.y} r={2.6} fill="#f59e0b" stroke="#121212" strokeWidth={1} pointerEvents="none" /> })}
         {pts.map((p, i) => { const s = toS(p); return <circle key={'pt' + i} cx={s.x} cy={s.y} r={3} fill={COLORS.preview} /> })}
         {cursor?.snap && (() => { const s = toS(cursor.snap); return <circle cx={s.x} cy={s.y} r={6} fill="none" stroke="#facc15" strokeWidth={1.5} /> })()}
         {drag?.type === 'box' && (() => {
@@ -882,7 +933,7 @@ export default function CADCanvas({
           <g stroke="#22c55e" strokeWidth={1} opacity={0.7}><line x1={s.x - 10} y1={s.y} x2={s.x + 10} y2={s.y} /><line x1={s.x} y1={s.y - 10} x2={s.x} y2={s.y + 10} /></g>) })()}
       </svg>
 
-      <div className="pointer-events-none absolute left-3 top-3 max-w-[45%] rounded-md bg-black/60 px-2.5 py-1 text-xs text-gray-300">{hintText}</div>
+      <div className="pointer-events-none absolute left-3 top-3 max-w-[45%] rounded-md bg-black/60 px-2.5 py-1 text-xs text-gray-300">{pasting ? `Incolla ${pasting.ents.length} entità: click per posizionare (Esc = annulla)` : pickLine ? 'Click sulla linea di riferimento per rendere parallela la linea selezionata (Esc = annulla)' : hintText}</div>
 
       {measure && (
         <div className="absolute right-3 top-3 z-10 w-60 rounded-lg border border-cyan-500/40 bg-[#0f1a1d]/95 p-3 text-xs shadow-xl" onMouseDown={stop} onDoubleClick={stop}>

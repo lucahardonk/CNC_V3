@@ -9,6 +9,9 @@ Convenzioni:
       circle  {cx, cy, r}
       arc     {cx, cy, r, start, end}  angoli in gradi, verso antiorario da start a end
       bridge  {x, y, w, h}          rettangolo ponticello (tab)
+      ellipse {cx, cy, rx, ry, rotation}  rotation in gradi (antiorario)
+      slot    {cx, cy, length, width, angle}  length = interasse dei semicerchi, width = 2 x raggio
+      spline  {points: [{x, y}, ...]}  Catmull-Rom (come nel frontend); chiusa se primo == ultimo punto
     Le entity con is_construction=True o type in (construction, dimension) vengono ignorate.
 
 Operazioni: profile_on, profile_inside, profile_outside, pocket.
@@ -26,7 +29,9 @@ from shapely.ops import linemerge, polygonize, unary_union
 
 EPS = 1e-6
 ARC_SEG_DEG = 5.0
-IGNORED_TYPES = {"construction", "dimension"}
+IGNORED_TYPES = {"construction", "dimension", "dim_radial", "dim_angle"}
+SNAP_TOL = 0.01  # mm: estremi più vicini di così vengono uniti (arrotondamenti del CAD)
+ELLIPSE_SEGMENTS = 144
 
 
 # --------------------------------------------------------------------------- geometria
@@ -38,6 +43,48 @@ def arc_points(cx: float, cy: float, r: float, start: float, end: float) -> list
     n = max(2, int(math.ceil(sweep / ARC_SEG_DEG)))
     return [(cx + r * math.cos(math.radians(start + sweep * i / n)),
              cy + r * math.sin(math.radians(start + sweep * i / n))) for i in range(n + 1)]
+
+
+def ellipse_points(cx: float, cy: float, rx: float, ry: float, rotation: float = 0.0,
+                   n: int = ELLIPSE_SEGMENTS) -> list[tuple[float, float]]:
+    """Stessa parametrizzazione del frontend (ellipsePoint)."""
+    r = math.radians(rotation or 0.0)
+    out = []
+    for i in range(n + 1):
+        t = 2 * math.pi * i / n
+        lx, ly = rx * math.cos(t), ry * math.sin(t)
+        out.append((cx + lx * math.cos(r) - ly * math.sin(r), cy + lx * math.sin(r) + ly * math.cos(r)))
+    return out
+
+
+def slot_points(cx: float, cy: float, length: float, width: float, angle: float = 0.0) -> list[tuple[float, float]]:
+    """Contorno chiuso dell'asola (come slotParts del frontend): 2 segmenti + 2 semicerchi."""
+    a = angle or 0.0
+    ux, uy = math.cos(math.radians(a)), math.sin(math.radians(a))
+    r, h = width / 2.0, length / 2.0
+    c1 = (cx - ux * h, cy - uy * h)
+    c2 = (cx + ux * h, cy + uy * h)
+    pts = arc_points(c2[0], c2[1], r, a - 90, a + 90) + arc_points(c1[0], c1[1], r, a + 90, a + 270)
+    pts.append(pts[0])
+    return pts
+
+
+def catmull_rom_points(points: list[tuple[float, float]], samples: int = 20) -> list[tuple[float, float]]:
+    """Catmull-Rom uniforme con estremi ripetuti, identica a catmullRomPoints del frontend."""
+    if len(points) < 2:
+        return list(points)
+    n = len(points)
+    P = lambda i: points[max(0, min(n - 1, i))]  # noqa: E731
+    out = [points[0]]
+    for i in range(n - 1):
+        p0, p1, p2, p3 = P(i - 1), P(i), P(i + 1), P(i + 2)
+        for k in range(1, samples + 1):
+            t = k / samples
+            t2, t3 = t * t, t * t * t
+            f = lambda a, b, c, d: 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2  # noqa: E731
+                                          + (-a + 3 * b - 3 * c + d) * t3)
+            out.append((f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])))
+    return out
 
 
 def entity_to_geom(e: dict[str, Any]):
@@ -59,9 +106,71 @@ def entity_to_geom(e: dict[str, Any]):
         if t == "arc":
             return "line", LineString(arc_points(float(d["cx"]), float(d["cy"]), float(d["r"]),
                                                  float(d.get("start", 0)), float(d.get("end", 90))))
+        if t == "ellipse":
+            rx, ry = abs(float(d["rx"])), abs(float(d["ry"]))
+            if rx <= 0 or ry <= 0:
+                return None, None
+            return "area", Polygon(ellipse_points(float(d["cx"]), float(d["cy"]), rx, ry, float(d.get("rotation") or 0)))
+        if t == "slot":
+            width = abs(float(d["width"]))
+            if width <= 0:
+                return None, None
+            return "area", Polygon(slot_points(float(d["cx"]), float(d["cy"]), abs(float(d.get("length") or 0)),
+                                               width, float(d.get("angle") or 0)))
+        if t == "spline":
+            pts = [(float(p["x"]), float(p["y"])) for p in (d.get("points") or [])]
+            if len(pts) < 2:
+                return None, None
+            # Pezzi molto densi (es. ellissi tagliate) non richiedono 20 campioni per tratto
+            samples = max(2, min(20, int(math.ceil(600 / len(pts)))))
+            curve = catmull_rom_points(pts, samples)
+            if len(pts) >= 3 and math.dist(pts[0], pts[-1]) < SNAP_TOL:
+                poly = Polygon(curve).buffer(0)
+                if not poly.is_empty and poly.area > EPS:
+                    return "area", poly
+            return "line", LineString(curve)
     except (KeyError, TypeError, ValueError):
         return None, None
     return None, None
+
+
+def snap_endpoints(lines: list[LineString], tol: float = SNAP_TOL) -> list[LineString]:
+    """Unisce gli estremi quasi coincidenti (tagli/raccordi arrotondati a 3 decimali) per poter
+    concatenare linee, archi e spline in contorni chiusi. Gli estremi vicini all'interno di
+    un'altra linea (contatto a T) vengono proiettati su di essa."""
+    reps: list[tuple[float, float]] = []
+
+    def rep(p):
+        for q in reps:
+            if math.dist(p, q) <= tol:
+                return q
+        reps.append(p)
+        return p
+
+    out = []
+    for ln in lines:
+        c = list(ln.coords)
+        c[0], c[-1] = rep(c[0]), rep(c[-1])
+        out.append(c)
+    # contatti a T: estremo libero vicino al corpo di un'altra linea
+    geoms = [LineString(c) for c in out if len(c) >= 2]
+    for i, c in enumerate(out):
+        for end in (0, -1):
+            p = Point(c[end])
+            for j, g in enumerate(geoms):
+                if j == i or g.is_empty:
+                    continue
+                dd = g.distance(p)
+                if EPS < dd <= tol:
+                    q = g.interpolate(g.project(p))
+                    c[end] = (q.x, q.y)
+                    break
+    res = []
+    for c in out:
+        g = LineString(c)
+        if g.length > EPS:
+            res.append(g)
+    return res
 
 
 def build_geometry(entities: Iterable[dict[str, Any]]):
@@ -77,6 +186,7 @@ def build_geometry(entities: Iterable[dict[str, Any]]):
 
     open_lines = []
     if lines:
+        lines = snap_endpoints(lines)
         noded = unary_union(lines)
         closed = list(polygonize(noded))
         areas.extend(closed)

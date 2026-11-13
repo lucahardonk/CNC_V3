@@ -8,7 +8,7 @@ import Tooltip from '../common/Tooltip'
 import { TOOL_TIPS } from '../settings/ToolBox'
 import { errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
-import { isDim, layerColor, syncDims, translate, uid } from './geometry'
+import { isDim, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
 
 const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
@@ -24,6 +24,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   const [saveState, setSaveState] = useState('saved')
   const [ctx, setCtx] = useState(null)
   const [genOpen, setGenOpen] = useState(false)
+  const [parallelFor, setParallelFor] = useState(null) // id della linea da rendere parallela
   const hist = useRef({ past: [], future: [] })
   const saveTimer = useRef(null)
   const latest = useRef([])
@@ -102,6 +103,20 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   }
 
   const selEntity = selected.size === 1 ? entities.find((e) => selected.has(e.id)) : null
+  const constrainLine = (id, kind, ref) => {
+    const ln = latest.current.find((e) => e.id === id)
+    if (!ln) return
+    const data = lineConstrained(ln.data, kind, ref)
+    if (!data) return notify('Impossibile applicare il vincolo (linea di lunghezza nulla)')
+    commit(latest.current.map((e) => (e.id === id ? { ...e, data } : e)))
+  }
+  const onPickParallel = (refLine) => {
+    const id = parallelFor
+    setParallelFor(null)
+    if (!refLine) return
+    if (refLine.id === id) return notify('Scegli una linea diversa da quella selezionata')
+    constrainLine(id, 'parallel', refLine.data)
+  }
   const updateSel = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)))
   const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
@@ -142,7 +157,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
           {loaded && (
             <CADCanvas entities={entities} onChange={commit} selected={selected} setSelected={setSelected} tool={tool} setTool={setTool}
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
-              onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} />
+              onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} pickLine={parallelFor ? onPickParallel : null} />
           )}
         </div>
         <aside className="w-60 shrink-0 overflow-y-auto border-l border-line bg-bg-panel p-3 text-sm">
@@ -165,6 +180,16 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                 <div className="text-xs text-gray-400">{!selEntity.targetId ? 'Quota libera (non collegata)' : selEntity.driving === false ? 'Quota di riferimento (sola lettura)' : 'Quota guida · click sulla quota per modificarla'}</div>
               )}
               {selEntity.type === 'spline' && <div className="text-xs text-gray-400">Punti di controllo: <b className="text-gray-200">{selEntity.data.points.length}</b></div>}
+              {(selEntity.type === 'line' || selEntity.type === 'construction') && (
+                <div>
+                  <span className="label">Allinea linea</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button size="xs" onClick={() => constrainLine(selEntity.id, 'horizontal')} title="Rende la linea orizzontale (mantiene punto iniziale e lunghezza)">Orizzontale</Button>
+                    <Button size="xs" onClick={() => constrainLine(selEntity.id, 'vertical')} title="Rende la linea verticale (mantiene punto iniziale e lunghezza)">Verticale</Button>
+                    <Button size="xs" variant={parallelFor ? 'primary' : undefined} onClick={() => setParallelFor(parallelFor ? null : selEntity.id)} title="Poi click su una linea di riferimento">{parallelFor ? 'Scegli riferimento…' : 'Parallela a…'}</Button>
+                  </div>
+                </div>
+              )}
               {selEntity.type === 'line' && (
                 <div className="text-xs text-gray-400">Lunghezza: <b className="text-gray-200">{Math.hypot(selEntity.data.x2 - selEntity.data.x1, selEntity.data.y2 - selEntity.data.y1).toFixed(3)} mm</b></div>
               )}
