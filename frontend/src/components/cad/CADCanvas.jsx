@@ -922,6 +922,7 @@ export default function CADCanvas({
         {dimPick && renderEntity(dimPick.e, '_dpick', { color: '#f472b6', width: 2.5 })}
         {measureMarks()}
         {preview()}
+        {tool !== 'trim' && entities.filter((e) => !isDim(e) && e.type !== 'bridge').flatMap((e) => keyPoints(e).map((k, i) => { const q = toS(k); return <circle key={`kp${e.id}_${i}`} cx={q.x} cy={q.y} r={2.4} fill={selected.has(e.id) ? COLORS.selected : '#cbd5e1'} stroke="#121212" strokeWidth={1} pointerEvents="none" /> }))}
         {nodes.map((n, i) => { const s = toS(n); return <circle key={'nd' + i} cx={s.x} cy={s.y} r={2.6} fill="#f59e0b" stroke="#121212" strokeWidth={1} pointerEvents="none" /> })}
         {pts.map((p, i) => { const s = toS(p); return <circle key={'pt' + i} cx={s.x} cy={s.y} r={3} fill={COLORS.preview} /> })}
         {cursor?.snap && (() => { const s = toS(cursor.snap); return <circle cx={s.x} cy={s.y} r={6} fill="none" stroke="#facc15" strokeWidth={1.5} /> })()}

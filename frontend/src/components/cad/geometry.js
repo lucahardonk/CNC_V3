@@ -262,11 +262,15 @@ export function keyPoints(e) {
       const c = { x: d.cx, y: d.cy }
       return [c, polar(c, d.r, d.start), polar(c, d.r, d.end), polar(c, d.r, d.start + arcSweep(d.start, d.end) / 2)]
     }
-    case 'ellipse':
-      return [{ x: d.cx, y: d.cy }, ...[0, 0.5, 1, 1.5].map((k) => ellipsePoint(d, k * Math.PI))]
+    case 'ellipse': {
+      // centro, 4 estremi degli assi sul perimetro, 2 fuochi (sull'asse maggiore)
+      const c = { x: d.cx, y: d.cy }, f = Math.sqrt(Math.abs(d.rx * d.rx - d.ry * d.ry))
+      const fa = (d.rotation || 0) + (d.rx >= d.ry ? 0 : 90)
+      return [c, ...[0, 0.5, 1, 1.5].map((k) => ellipsePoint(d, k * Math.PI)), ...(f > EPS ? [polar(c, f, fa), polar(c, -f, fa)] : [])]
+    }
     case 'slot': {
       const s = slotParts(d)
-      return [{ x: d.cx, y: d.cy }, s.c1, s.c2, s.segs[0].a, s.segs[0].b, s.segs[1].a, s.segs[1].b]
+      return [{ x: d.cx, y: d.cy }, s.c1, s.c2, s.segs[0].a, s.segs[0].b, s.segs[1].a, s.segs[1].b, polar(s.c2, s.r, d.angle || 0), polar(s.c1, s.r, (d.angle || 0) + 180)]
     }
     case 'spline': return [...(d.points || [])]
     default: return []
