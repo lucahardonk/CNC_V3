@@ -211,6 +211,7 @@ export function primitives(e) {
     }
     case 'dim_angle':
       return [{ kind: 'circ', c: { x: d.cx, y: d.cy }, r: d.r, start: d.a1, end: d.a2 }]
+    case 'point': return [{ kind: 'seg', a: { x: d.x, y: d.y }, b: { x: d.x, y: d.y } }]
     default: return []
   }
 }
@@ -273,6 +274,7 @@ export function keyPoints(e) {
       return [{ x: d.cx, y: d.cy }, s.c1, s.c2, s.segs[0].a, s.segs[0].b, s.segs[1].a, s.segs[1].b, polar(s.c2, s.r, d.angle || 0), polar(s.c1, s.r, (d.angle || 0) + 180)]
     }
     case 'spline': return [...(d.points || [])]
+    case 'point': return [{ x: d.x, y: d.y }]
     default: return []
   }
 }
@@ -293,6 +295,7 @@ export function bbox(e) {
       return bboxOfPts(ellipsePoints(d, 72))
     case 'slot': return bboxOfPts(slotPoints(d, 24))
     case 'spline': return bboxOfPts(d.points?.length ? catmullRomPoints(d.points, 8) : [{ x: 0, y: 0 }])
+    case 'point': return { minX: d.x, minY: d.y, maxX: d.x, maxY: d.y }
     case 'constraint': return { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
     default: return { minX: Math.min(d.x1, d.x2), minY: Math.min(d.y1, d.y2), maxX: Math.max(d.x1, d.x2), maxY: Math.max(d.y1, d.y2) }
   }
@@ -348,7 +351,7 @@ export function intersectionsWith(e, others) {
   const out = []
   const pe = primitives(e)
   for (const o of others) {
-    if (o === e || o.id === e.id || isDim(o) || o.type === 'bridge') continue
+    if (o === e || o.id === e.id || isDim(o) || o.type === 'bridge' || o.type === 'point' || o.type === 'constraint') continue
     const po = primitives(o)
     for (const a of pe) for (const b of po) out.push(...intersectPrims(a, b))
   }
@@ -414,6 +417,7 @@ export function mirrorEntity(e, a, b) {
     return [{ ...e, id, data: { ...d, cx: c.x, cy: c.y, [k]: refAng(d[k] || 0) } }]
   }
   if (e.type === 'spline') return [{ ...e, id, data: { ...d, points: d.points.map((p) => reflectPt(p, a, b)) } }]
+  if (e.type === 'point') return [{ ...e, id, data: { ...d, ...reflectPt({ x: d.x, y: d.y }, a, b) } }]
   if (e.type === 'dim_radial') {
     const c = reflectPt({ x: d.cx, y: d.cy }, a, b)
     return [{ ...e, id, data: { ...d, cx: c.x, cy: c.y, angle: refAng(d.angle) } }]
@@ -459,6 +463,7 @@ export function rotateEntity(e, center, angleDeg) {
       return [{ ...e, id, data: { ...d, cx: c.x, cy: c.y, [k]: ra(d[k] || 0) } }]
     }
     case 'spline': return [{ ...e, id, data: { ...d, points: d.points.map((p) => rotPt(p, center, angleDeg)) } }]
+    case 'point': return [{ ...e, id, data: { ...d, ...rotPt({ x: d.x, y: d.y }, center, angleDeg) } }]
     case 'dim_radial': {
       const c = rotPt({ x: d.cx, y: d.cy }, center, angleDeg)
       return [{ ...e, id, data: { ...d, cx: c.x, cy: c.y, angle: ra(d.angle) } }]
@@ -576,7 +581,7 @@ export function syncDims(list) {
 
 // --------------------------------------------------------------------------- nodi (vertici + contatti)
 export const NODE_TOL = 0.01 // mm: tolleranza per contatti/tangenze (copre gli arrotondamenti a 3 decimali)
-const trimmable = (o) => !isDim(o) && o.type !== 'bridge' && o.type !== 'constraint'
+const trimmable = (o) => !isDim(o) && o.type !== 'bridge' && o.type !== 'constraint' && o.type !== 'point'
 
 // Estremi "naturali" di un'entità (vertici, giunzioni, estremi di curve aperte)
 export function entityEnds(e) {

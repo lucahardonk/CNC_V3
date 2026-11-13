@@ -13,7 +13,7 @@ import { acceptGeometry, fillDimValues, isConstraint, packEnt, pruneRefs, solveC
 
 const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
-const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione', constraint: 'Vincolo di coincidenza' }
+const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione', constraint: 'Vincolo di coincidenza', point: 'Punto' }
 
 export default function CADView({ project, layer, layers = [], onClose, onLayerUpdated, onStartCutting }) {
   const { settings, tools, materials, notify } = useStore()
@@ -173,7 +173,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
           {selEntity ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-white">{TYPE_NAMES[selEntity.type] || selEntity.type}</span>
+                <span className="font-semibold text-white">{selEntity.kind === 'on_line' ? 'Vincolo punto su linea' : TYPE_NAMES[selEntity.type] || selEntity.type}</span>
                 {selEntity.is_construction && !isDim(selEntity) && !isConstraint(selEntity) && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -188,7 +188,11 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
               {isDim(selEntity) && (
                 <div className="text-xs text-gray-400">{!(selEntity.targetId || selEntity.pa || selEntity.la) ? 'Quota libera (non collegata)' : selEntity.driving === false ? 'Quota di riferimento (sola lettura)' : 'Quota guida · click sulla quota per modificarla'}</div>
               )}
-              {isConstraint(selEntity) && (
+              {isConstraint(selEntity) && selEntity.kind === 'on_line' && (
+                <div className="text-xs leading-relaxed text-gray-400">Vincolo punto su linea: il punto scorre sulla linea e la segue quando si sposta.<br />
+                  <b className="text-gray-300">{pointName(selEntity.data.a, entities)}</b> ∈ <b className="text-gray-300">{pointName(selEntity.data.b, entities)}</b><br />Canc o Elimina per rimuovere il vincolo.</div>
+              )}
+              {isConstraint(selEntity) && selEntity.kind !== 'on_line' && (
                 <div className="text-xs leading-relaxed text-gray-400">I due punti restano sovrapposti (cardine): muovendo una figura l'altra la segue.<br />
                   <b className="text-gray-300">{pointName(selEntity.data.a, entities)}</b> ≡ <b className="text-gray-300">{pointName(selEntity.data.b, entities)}</b><br />Canc o Elimina per rimuovere il vincolo.</div>
               )}
@@ -380,11 +384,11 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
   )
 }
 
-const PT_NAMES = { p1: 'inizio', p2: 'fine', m: 'centro', c: 'centro', s: 'inizio', e: 'fine', o: '' }
+const PT_NAMES = { p1: 'inizio', p2: 'fine', m: 'punto medio', c: 'centro', s: 'inizio', e: 'fine', o: '', p: '', line: '' }
 function pointName(r, entities) {
   if (r.id === '__origin') return 'Origine'
   const e = entities.find((x) => x.id === r.id)
-  const n = PT_NAMES[r.ref] ?? (/^v\d/.test(r.ref) ? 'vertice ' + (+r.ref.slice(1) + 1) : /^i\d/.test(r.ref) ? 'punto ' + (+r.ref.slice(1) + 1) : r.ref)
+  const n = PT_NAMES[r.ref] ?? (/^v\d/.test(r.ref) ? 'vertice ' + (+r.ref.slice(1) + 1) : /^m\d/.test(r.ref) ? 'punto medio lato ' + (+r.ref.slice(1) + 1) : /^i\d/.test(r.ref) ? 'punto ' + (+r.ref.slice(1) + 1) : r.ref)
   return `${TYPE_NAMES[e?.type] || '?'} ${n}`.trim()
 }
 

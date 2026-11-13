@@ -7,11 +7,23 @@ import {
 } from './geometry'
 import {
   ORIGIN_ID, autoCoincide, coincident, constraintPos, fillDimValues, getPt, hasCoincident, isConstraint, isGeo, isLinkedDim, isStretch,
-  measureDim, namedPoints, setPt, solveCommit, syncRefDims,
+  isOnLine, measureDim, namedPoints, onLine, pointKind, setPt, solveCommit, syncRefDims,
 } from './constraints'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
 
-const COLORS = { normal: '#e5e7eb', selected: '#3b82f6', hover: '#93c5fd', construction: '#6b7280', bridge: '#f97316', dim: '#facc15', preview: '#22c55e', measure: '#22d3ee' }
+const COLORS = { normal: '#e5e7eb', selected: '#3b82f6', hover: '#93c5fd', construction: '#6b7280', bridge: '#f97316', dim: '#facc15', preview: '#22c55e', measure: '#22d3ee', point: '#d946ef', midCtr: '#22d3ee' }
+// Colore dei key-point/snap per categoria: vertice, punto medio, centro, entità Punto
+const KP_COLOR = { vtx: '#cbd5e1', mid: COLORS.midCtr, ctr: COLORS.midCtr, pt: COLORS.point }
+const SNAP_COLOR = { vtx: '#facc15', mid: COLORS.midCtr, ctr: COLORS.midCtr, pt: COLORS.point }
+const SNAP_LABEL = { mid: 'medio', ctr: 'centro', pt: 'punto' }
+// Key-point di un'entità con la loro categoria (i punti con nome danno la categoria, gli altri sono vertici)
+const kpWithKind = (e) => {
+  const named = namedPoints(e)
+  return keyPoints(e).map((k) => {
+    const q = named.find((n) => Math.abs(n.x - k.x) < 1e-9 && Math.abs(n.y - k.y) < 1e-9)
+    return { ...k, kind: q ? pointKind(e, q.ref) : 'vtx' }
+  })
+}
 const fmt = (v, n = 2) => Number(v).toFixed(n)
 // Appunti condivisi tra layer (vivono finché la pagina è aperta)
 let CLIPBOARD = null // { ents, base }
@@ -70,7 +82,7 @@ export default function CADCanvas({
     const out = [{ x: 0, y: 0, id: ORIGIN_ID }]
     const hx = stock.x / 2, hy = stock.y / 2
     out.push({ x: -hx, y: -hy }, { x: hx, y: -hy }, { x: hx, y: hy }, { x: -hx, y: hy })
-    for (const e of geo) if (!isDim(e)) out.push(...keyPoints(e).map((k) => ({ ...k, id: e.id })))
+    for (const e of geo) if (!isDim(e)) out.push(...kpWithKind(e).map((k) => ({ ...k, id: e.id })))
     for (const l of otherLayerEntities) for (const e of l.entities) if (!isDim(e)) out.push(...keyPoints(e))
     return out
   }, [geo, stock, otherLayerEntities])
@@ -323,6 +335,18 @@ export default function CADCanvas({
     const P = ortho(p, e)
     const mk = (type, data, extra = {}) => ({ id: uid(), type, is_construction: false, data, ...extra })
     switch (tool) {
+      case 'point': {
+        const pt = mk('point', { x: P.x, y: P.y }, { is_construction: true })
+        if (sn?.snap) return add(pt) // su un key-point: vincolo di coincidenza automatico
+        const h = hit(raw, (x) => x.type === 'line' || x.type === 'construction')
+        if (h) {
+          const q = rp(h.c.point)
+          pt.data = { x: q.x, y: q.y }
+          onChange([...entities, pt, onLine({ id: pt.id, ref: 'p' }, h.e.id)])
+          return notify('Punto vincolato sulla linea (Canc sul cerchietto verde per rimuovere il vincolo)', 'success')
+        }
+        return add(pt)
+      }
       case 'line': case 'construction': {
         if (!pts.length) return setPts([P])
         const a = pts[0]
@@ -549,6 +573,11 @@ export default function CADCanvas({
       }
       // l'etichetta di una quota è cliccabile quanto la sua linea
       const lab = entities.filter(isDim).map((x) => ({ e: x, d: dimLabelDist(x, sx, sy) })).filter((q) => q.d < 16).sort((a, b) => a.d - b.d)[0]
+      // etichetta di quota: trascinandola si cambia l'offset RELATIVO al punto medio della quota
+      if (lab && !e.shiftKey) {
+        setSelected(new Set([lab.e.id]))
+        return setDrag({ type: 'label', id: lab.e.id, start: raw, cur: raw, sx, sy, moved: false, editDim: isLinkedDim(lab.e) && lab.e.driving !== false ? lab.e : null })
+      }
       const h = lab ? { e: lab.e } : hit(raw)
       if (h) {
         let sel = selected
@@ -582,6 +611,10 @@ export default function CADCanvas({
       const moved = drag.moved || Math.hypot(sx - drag.sx, sy - drag.sy) > 3
       return setDrag({ ...drag, cur: moved ? sn.p : drag.cur, target: moved ? refOfSnap(sn.snap) : null, moved })
     }
+    if (drag?.type === 'label') {
+      setCursor({ raw, p: raw, snap: null })
+      return setDrag({ ...drag, cur: raw, moved: drag.moved || Math.hypot(sx - drag.sx, sy - drag.sy) > 3 })
+    }
     const sn = snap(raw, e, drag?.type === 'move' && drag.ids.size === 1 ? [...drag.ids][0] : null)
     setCursor({ raw, p: ortho(sn.p, e), snap: sn.snap })
     if (drag?.type === 'move') {
@@ -599,8 +632,16 @@ export default function CADCanvas({
         setSelected(new Set([drag.con && !selected.has(drag.con) ? drag.con : drag.id]))
       } else {
         const res = pointDragResult(drag)
-        if (res) { onChange(res.list, { fixed: res.fixed }); if (res.linked) notify('Vincolo di coincidenza creato (Canc per rimuoverlo)', 'success') }
+        if (res) {
+          onChange(res.list, { fixed: res.fixed })
+          if (res.linked) notify(res.linked === 'on_line' ? 'Punto vincolato sulla linea (Canc per rimuovere il vincolo)' : 'Vincolo di coincidenza creato (Canc per rimuoverlo)', 'success')
+        }
       }
+    } else if (drag?.type === 'label') {
+      if (drag.moved) {
+        const dx = drag.cur.x - drag.start.x, dy = drag.cur.y - drag.start.y
+        onChange(entities.map((x) => (x.id === drag.id ? { ...x, lo: { dx: round3((x.lo?.dx || 0) + dx), dy: round3((x.lo?.dy || 0) + dy) } } : x)))
+      } else if (drag.editDim) openDimEditor(drag.editDim)
     } else if (drag?.type === 'move') {
       const dx = drag.cur.x - drag.start.x, dy = drag.cur.y - drag.start.y
       if (Math.abs(dx) > 1e-9 || Math.abs(dy) > 1e-9) {
@@ -631,6 +672,15 @@ export default function CADCanvas({
     let list = entities.map((x) => (x.id === d.id ? setPt(x, d.ref, d.cur) : x))
     let linked = false
     if (d.target && d.target.id !== d.id && !hasCoincident(list, a, d.target)) { list = [...list, coincident(a, d.target)]; linked = true }
+    if (ent.type === 'point') {
+      // Punto rilasciato su una linea (non su un key-point) → vincolo punto su linea
+      let onl = list.some((c) => isOnLine(c) && c.data.a.id === d.id)
+      if (!d.target && !onl) {
+        const h = hit(d.cur, (x) => (x.type === 'line' || x.type === 'construction') && x.id !== d.id)
+        if (h) { list = [...list, onLine(a, h.e.id)]; onl = true; linked = 'on_line' }
+      }
+      if (onl) return { list, fixed: [], linked } // il solver proietta il punto sulla linea: scorre lungo di essa
+    }
     return { list, fixed: [keyOf(a)], linked }
   }
   // Anteprima durante i trascinamenti: il solver fa seguire le figure vincolate
@@ -680,17 +730,34 @@ export default function CADCanvas({
   }
 
   // ---------------------------------------------------------------- quote editabili
-  const dimLabelPos = (e) => {
-    const d = liveDim(e)
+  // Offset (px schermo) dell'etichetta: e.lo è relativo al punto medio della quota, in mm (+ trascinamento in corso)
+  const labelOff = (e) => {
+    let dx = e.lo?.dx || 0, dy = e.lo?.dy || 0
+    if (drag?.type === 'label' && drag.moved && drag.id === e.id) { dx += drag.cur.x - drag.start.x; dy += drag.cur.y - drag.start.y }
+    return { x: dx * v.s, y: -dy * v.s }
+  }
+  // Raggio dell'arco di una quota angolare: l'arco parte dall'intersezione e termina SULLE due linee
+  const angleR = (e, d, byId = entMap) => {
+    if (!e.la || !e.lb) return d.r
+    const c = { x: d.cx, y: d.cy }
+    const reach = [e.la, e.lb].map((r) => { const l = byId.get(r.id); return l ? Math.max(dist(c, { x: l.data.x1, y: l.data.y1 }), dist(c, { x: l.data.x2, y: l.data.y2 })) : Infinity })
+    const m = Math.min(...reach)
+    return m === Infinity || m <= 0 ? d.r : Math.max(Math.min(d.r, m * 0.9), Math.min(m, 4 / v.s))
+  }
+  const dimLabelBase = (e, d) => {
     if (e.type === 'dimension') { const q = dimLinePoints(d); const a = toS(q.A), b = toS(q.B); return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
     const c = { x: d.cx, y: d.cy }
-    if (e.type === 'dim_angle') return toS(polar(c, d.r + 10 / v.s, d.a1 + arcSweep(d.a1, d.a2) / 2))
+    if (e.type === 'dim_angle') return toS(polar(c, angleR(e, d) + 10 / v.s, d.a1 + arcSweep(d.a1, d.a2) / 2))
     return toS(d.diam ? polar(c, d.r * 0.45, d.angle) : polar(c, d.r / 2, d.angle))
+  }
+  const dimLabelPos = (e) => {
+    const b = dimLabelBase(e, liveDim(e)), o = labelOff(e)
+    return { x: b.x + o.x, y: b.y + o.y }
   }
   // Distanza (px) del click dall'etichetta: le quote lineari hanno un'etichetta lunga lungo la linea di quota
   const dimLabelDist = (e, sx, sy) => {
     const c = dimLabelPos(e)
-    if (e.type !== 'dimension') return dist(c, { x: sx, y: sy })
+    if (e.type !== 'dimension' || e.lo) return dist(c, { x: sx, y: sy }) * (e.lo && e.type === 'dimension' ? 0.5 : 1)
     const q = dimLinePoints(liveDim(e)), a = toS(q.A), b = toS(q.B), L = dist(a, b) || 1
     const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, dx = sx - c.x, dy = sy - c.y
     const along = Math.max(0, Math.abs(dx * u.x + dy * u.y) - 28), perp = Math.abs(dx * u.y - dy * u.x)
@@ -714,7 +781,7 @@ export default function CADCanvas({
     if (Math.abs(val - cur) < 1e-9) return
     // la quota guida prende il nuovo valore e il solver riposiziona la geometria (primo riferimento fermo)
     const fixed = dim.targetId ? (entMap.get(dim.targetId)?.type === 'rect' ? [] : [`${dim.targetId}:p1`])
-      : dim.pa ? [keyOf(dim.pa)] : dim.la ? [dim.la.id] : []
+      : dim.pa ? [keyOf(dim.pa)] : [] // angolo: il solver ruota la linea meno vincolata
     onChange(entities.map((x) => (x.id === dim.id ? { ...x, value: val } : x)), { fixed, refresh: false })
   }
 
@@ -831,6 +898,13 @@ export default function CADCanvas({
       transform={`rotate(${flip ? ang + 180 : ang} ${x} ${y})`}>{txt}</text>
   }
 
+  // Etichetta agganciata: posizione = punto medio della quota + offset relativo (con linea di richiamo se spostata)
+  const anchoredText = (e, mx, my, ang, txt, stroke, ref, dy) => {
+    const o = labelOff(e)
+    const moved = Math.hypot(o.x, o.y) > 1
+    return <>{moved && <line x1={mx} y1={my} x2={mx + o.x} y2={my + o.y} stroke={stroke} strokeWidth={0.6} strokeDasharray="2 2" />}
+      {dimText(mx + o.x, my + o.y, ang, txt, stroke, undefined, ref, dy)}</>
+  }
   const renderEntity = (e, key, opts = {}) => {
     const d = isDim(e) && !opts.ghost && !opts.live ? liveDim(e) : e.data
     const ref = e.driving === false
@@ -875,7 +949,7 @@ export default function CADCanvas({
           <g key={key}>
             {q.off ? <><line x1={pa.x} y1={pa.y} x2={ea.x} y2={ea.y} stroke={stroke} strokeWidth={0.8} /><line x1={pb.x} y1={pb.y} x2={eb.x} y2={eb.y} stroke={stroke} strokeWidth={0.8} /></> : null}
             <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} {...common} markerStart="url(#arrow)" markerEnd="url(#arrow)" />
-            {editingDim?.id !== e.id && dimText(mx, my, ang, lbl(`${fmt(L)} mm`), stroke, undefined, ref)}
+            {editingDim?.id !== e.id && (opts.ghost ? dimText(mx, my, ang, lbl(`${fmt(L)} mm`), stroke, undefined, ref) : anchoredText(e, mx, my, ang, lbl(`${fmt(L)} mm`), stroke, ref))}
           </g>
         )
       }
@@ -888,17 +962,27 @@ export default function CADCanvas({
           <g key={key}>
             <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} {...common} markerStart={d.diam ? 'url(#arrow)' : undefined} markerEnd="url(#arrow)" />
             {!d.diam && <circle cx={tail.x} cy={tail.y} r={2} fill={stroke} />}
-            {editingDim?.id !== e.id && dimText(mid.x, mid.y, ang, lbl(d.diam ? `Ø ${fmt(2 * d.r)} mm` : `R ${fmt(d.r)} mm`), stroke, undefined, ref)}
+            {editingDim?.id !== e.id && anchoredText(opts.ghost ? {} : e, mid.x, mid.y, ang, lbl(d.diam ? `Ø ${fmt(2 * d.r)} mm` : `R ${fmt(d.r)} mm`), stroke, ref)}
           </g>
         )
       }
       case 'dim_angle': {
         const c = { x: d.cx, y: d.cy }, sw = arcSweep(d.a1, d.a2)
-        const t = toS(polar(c, d.r + 10 / v.s, d.a1 + sw / 2))
+        const r = opts.ghost ? d.r : angleR(e, d, opts.byId || entMap)
+        const t = toS(polar(c, r + 10 / v.s, d.a1 + sw / 2))
         return (
           <g key={key}>
-            <path d={arcPath({ cx: d.cx, cy: d.cy, r: d.r, start: d.a1, end: d.a2 })} {...common} markerStart="url(#arrow)" markerEnd="url(#arrow)" />
-            {editingDim?.id !== e.id && dimText(t.x, t.y, 0, lbl(`${fmt(sw)}°`), stroke, undefined, ref, 4)}
+            <path d={arcPath({ cx: d.cx, cy: d.cy, r, start: d.a1, end: d.a2 })} {...common} markerStart="url(#arrow)" markerEnd="url(#arrow)" />
+            {editingDim?.id !== e.id && anchoredText(opts.ghost ? {} : e, t.x, t.y, 0, lbl(`${fmt(sw)}°`), stroke, ref, 4)}
+          </g>
+        )
+      }
+      case 'point': {
+        const c = toS({ x: d.x, y: d.y }), col = opts.color || (isSel ? COLORS.selected : hover === e.id ? COLORS.hover : COLORS.point)
+        return (
+          <g key={key} stroke={col} strokeWidth={1.5} fill="none">
+            <circle cx={c.x} cy={c.y} r={3} />
+            <line x1={c.x - 6} y1={c.y} x2={c.x + 6} y2={c.y} /><line x1={c.x} y1={c.y - 6} x2={c.x} y2={c.y + 6} />
           </g>
         )
       }
@@ -1017,7 +1101,8 @@ export default function CADCanvas({
   const origin = toS({ x: 0, y: 0 })
   const stockTL = toS({ x: -stock.x / 2, y: stock.y / 2 })
   const hintText = {
-    select: drag?.type === 'point' ? (drag.target ? 'Rilascia per creare il vincolo di coincidenza' : 'Trascina su un altro punto o sull\'origine per vincolarlo (Alt = senza snap)')
+    point: 'Click = punto libero · su una linea = punto vincolato sulla linea · su un key-point (pallino ciano = medio/centro) = punto coincidente',
+    select: drag?.type === 'label' ? 'Rilascia per fissare la posizione dell\'etichetta (relativa al punto medio della quota)' : drag?.type === 'point' ? (drag.target ? 'Rilascia per creare il vincolo di coincidenza' : 'Trascina su un altro punto o sull\'origine per vincolarlo (Alt = senza snap)')
       : 'Click/drag per selezionare · trascina un punto chiave per spostare/stirare e vincolare · quadratino verde = vincolo (Canc elimina) · H = adatta',
     line: pts.length ? 'Click punto finale (Shift = orto, Esc = fine)' : 'Click punto iniziale',
     line_midpoint: pts.length ? 'Click estremo: la linea si estende simmetrica' : 'Click punto medio della linea',
@@ -1073,23 +1158,32 @@ export default function CADCanvas({
         <g opacity={0.4} pointerEvents="none">
           {otherLayerEntities.map((l, li) => l.entities.map((e) => renderEntity(e, `ol${li}_${e.id}`, { color: l.color, width: 1, ghost: true })))}
         </g>
-        {shown.map((e) => renderEntity(e, e.id, dragPreview ? { live: true } : {}))}
+        {shown.map((e) => renderEntity(e, e.id, dragPreview ? { live: true, byId: shownMap } : {}))}
         {pick && (() => { const e = entities.find((x) => x.id === pick.id); return e && renderEntity(e, '_pick', { color: '#f472b6', width: 2.5 }) })()}
         {dimPick && renderEntity(dimPick.e, '_dpick', { color: '#f472b6', width: 2.5 })}
         {measureMarks()}
         {preview()}
-        {tool !== 'trim' && shown.filter((e) => isGeo(e)).flatMap((e) => keyPoints(e).map((k, i) => { const q = toS(k); return <circle key={`kp${e.id}_${i}`} cx={q.x} cy={q.y} r={2.4} fill={selected.has(e.id) ? COLORS.selected : '#cbd5e1'} stroke="#121212" strokeWidth={1} pointerEvents="none" /> }))}
+        {/* key-point: vertici grigi, punti medi e centri ciano (vincolabili come i vertici) */}
+        {tool !== 'trim' && shown.filter((e) => isGeo(e) && e.type !== 'point').flatMap((e) => kpWithKind(e).map((k, i) => { const q = toS(k); return <circle key={`kp${e.id}_${i}`} cx={q.x} cy={q.y} r={k.kind === 'vtx' ? 2.4 : 2.2} fill={selected.has(e.id) ? COLORS.selected : KP_COLOR[k.kind]} stroke="#121212" strokeWidth={1} pointerEvents="none" /> }))}
         {/* vincoli di coincidenza: quadratino verde (click per selezionare, Canc per eliminare) */}
         {shown.filter(isConstraint).map((c) => {
           const q = constraintPos(c, shownMap)
           if (!q) return null
           const s2 = toS(q), sel = selected.has(c.id)
+          if (isOnLine(c)) return <circle key={'cn' + c.id} cx={s2.x} cy={s2.y} r={6} fill="none" stroke={sel ? COLORS.selected : '#22c55e'} strokeWidth={sel ? 2.2 : 1.5} pointerEvents="none" />
           return <rect key={'cn' + c.id} x={s2.x - 5} y={s2.y - 5} width={10} height={10} fill="none" stroke={sel ? COLORS.selected : '#22c55e'} strokeWidth={sel ? 2.2 : 1.5} pointerEvents="none" />
         })}
         {drag?.type === 'point' && drag.moved && drag.target && (() => { const s2 = toS(drag.cur); return <rect x={s2.x - 7} y={s2.y - 7} width={14} height={14} fill="rgba(34,197,94,0.25)" stroke="#22c55e" strokeWidth={1.5} pointerEvents="none" /> })()}
         {nodes.map((n, i) => { const s = toS(n); return <circle key={'nd' + i} cx={s.x} cy={s.y} r={2.6} fill="#f59e0b" stroke="#121212" strokeWidth={1} pointerEvents="none" /> })}
         {pts.map((p, i) => { const s = toS(p); return <circle key={'pt' + i} cx={s.x} cy={s.y} r={3} fill={COLORS.preview} /> })}
-        {cursor?.snap && (() => { const s = toS(cursor.snap); return <circle cx={s.x} cy={s.y} r={6} fill="none" stroke="#facc15" strokeWidth={1.5} /> })()}
+        {cursor?.snap && (() => {
+          const s = toS(cursor.snap), k = cursor.snap.kind || 'vtx', col = SNAP_COLOR[k]
+          return <g pointerEvents="none">
+            <circle cx={s.x} cy={s.y} r={6} fill={k === 'vtx' ? 'none' : 'rgba(34,211,238,0.18)'} stroke={col} strokeWidth={1.5} />
+            {k !== 'vtx' && <circle cx={s.x} cy={s.y} r={2.6} fill={col} />}
+            {SNAP_LABEL[k] && <text x={s.x + 9} y={s.y - 8} fill={col} fontSize={10} fontFamily="monospace" paintOrder="stroke" stroke="#121212" strokeWidth={3}>{SNAP_LABEL[k]}</text>}
+          </g>
+        })()}
         {drag?.type === 'box' && (() => {
           const a = toS(drag.a), b = toS(drag.b)
           return <rect x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)} width={Math.abs(b.x - a.x)} height={Math.abs(b.y - a.y)} fill="rgba(59,130,246,0.1)" stroke="#3b82f6" strokeDasharray="4 3" />

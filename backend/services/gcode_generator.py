@@ -29,7 +29,7 @@ from shapely.ops import linemerge, polygonize, unary_union
 
 EPS = 1e-6
 ARC_SEG_DEG = 5.0
-IGNORED_TYPES = {"construction", "dimension", "dim_radial", "dim_angle", "constraint"}
+IGNORED_TYPES = {"construction", "dimension", "dim_radial", "dim_angle", "constraint", "point"}
 SNAP_TOL = 0.01  # mm: estremi più vicini di così vengono uniti (arrotondamenti del CAD)
 ELLIPSE_SEGMENTS = 144
 

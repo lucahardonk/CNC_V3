@@ -13,8 +13,12 @@ export function namedPoints(e) {
   switch (e.type) {
     case 'line': case 'construction':
       return [{ ref: 'p1', x: d.x1, y: d.y1 }, { ref: 'p2', x: d.x2, y: d.y2 }, { ref: 'm', x: (d.x1 + d.x2) / 2, y: (d.y1 + d.y2) / 2 }]
-    case 'rect':
-      return [...rectLines(d).map((s, i) => ({ ref: 'v' + i, ...s.a })), { ref: 'c', x: d.x + d.w / 2, y: d.y + d.h / 2 }]
+    case 'rect': {
+      const L = rectLines(d)
+      return [...L.map((s, i) => ({ ref: 'v' + i, ...s.a })), { ref: 'c', x: d.x + d.w / 2, y: d.y + d.h / 2 },
+        ...L.map((s, i) => ({ ref: 'm' + i, x: (s.a.x + s.b.x) / 2, y: (s.a.y + s.b.y) / 2 }))]
+    }
+    case 'point': return [{ ref: 'p', x: d.x, y: d.y }]
     case 'circle': {
       const c = { x: d.cx, y: d.cy }
       return [{ ref: 'c', ...c }, ...[0, 90, 180, 270].map((a, i) => ({ ref: 'q' + i, ...polar(c, d.r, a) }))]
@@ -29,6 +33,24 @@ export function namedPoints(e) {
   }
 }
 
+// Categoria di un punto con nome: 'vtx' vertice/estremo, 'mid' punto medio, 'ctr' centro, 'pt' entità Punto.
+// Nome stabile del key-point: mid_<id>_<lato> / ctr_<id> / pt_<id> (vedi keyPointName)
+export function pointKind(e, ref) {
+  if (!e) return 'vtx'
+  if (e.type === 'point') return 'pt'
+  if (ref === 'm' && (e.type === 'line' || e.type === 'construction')) return 'mid'
+  if (e.type === 'rect' && /^m\d$/.test(ref)) return 'mid'
+  if (ref === 'c' || ((e.type === 'ellipse' || e.type === 'slot') && ref === 'k0')) return 'ctr'
+  return 'vtx'
+}
+export function keyPointName(e, ref) {
+  const k = pointKind(e, ref)
+  if (k === 'mid') return `mid_${e.id}_${ref === 'm' ? 0 : ref.slice(1)}`
+  if (k === 'ctr') return `ctr_${e.id}`
+  if (k === 'pt') return `pt_${e.id}`
+  return `${ref}_${e.id}`
+}
+
 export function getPt(e, ref) {
   if (!e) return null
   const p = namedPoints(e).find((q) => q.ref === ref)
@@ -36,7 +58,7 @@ export function getPt(e, ref) {
 }
 
 // Punti che si spostano da soli (stiramento); tutti gli altri spostano l'intera figura (rigida)
-export const isStretch = (e, ref) => !!e && (((e.type === 'line' || e.type === 'construction') && (ref === 'p1' || ref === 'p2')) || (e.type === 'spline' && /^i\d+$/.test(ref)))
+export const isStretch = (e, ref) => !!e && (e.type === 'point' || ((e.type === 'line' || e.type === 'construction') && (ref === 'p1' || ref === 'p2')) || (e.type === 'spline' && /^i\d+$/.test(ref)))
 
 export function shift(e, dx, dy) {
   const d = { ...e.data }
@@ -47,6 +69,7 @@ export function shift(e, dx, dy) {
 }
 
 export function setPt(e, ref, p) {
+  if (e.type === 'point') return { ...e, data: { ...e.data, x: p.x, y: p.y } }
   if (e.type === 'line' || e.type === 'construction') {
     if (ref === 'p1') return { ...e, data: { ...e.data, x1: p.x, y1: p.y } }
     if (ref === 'p2') return { ...e, data: { ...e.data, x2: p.x, y2: p.y } }
@@ -75,14 +98,29 @@ export function pointRefAt(list, p, excludeIds = new Set(), tol = 1e-6) {
   return best && { id: best.id, ref: best.ref }
 }
 
-const sameRef = (a, b) => a.id === b.id && a.ref === b.ref
+const sameRef = (a, b) => !!a && !!b && a.id === b.id && a.ref === b.ref
+// Vincolo "punto su linea": data.a = punto con nome, data.b = { id: linea, ref: 'line' }
+export const isOnLine = (c) => isConstraint(c) && c.kind === 'on_line'
+export const onLine = (a, lineId) => ({ id: uid(), type: 'constraint', is_construction: true, kind: 'on_line', data: { a: { ...a }, b: { id: lineId, ref: 'line' } } })
+// Proiezione di p sulla retta della linea l
+export function projectOnLine(l, p) {
+  const d = l.data, ux = d.x2 - d.x1, uy = d.y2 - d.y1, L2 = ux * ux + uy * uy
+  if (L2 < EPS) return { x: d.x1, y: d.y1 }
+  const t = ((p.x - d.x1) * ux + (p.y - d.y1) * uy) / L2
+  return { x: d.x1 + ux * t, y: d.y1 + uy * t }
+}
+const onLineErr = (byId, c) => {
+  const a = refPt(byId, c.data.a), l = byId.get(c.data.b.id)
+  return a && l ? dist(a, projectOnLine(l, a)) : 0
+}
 export const coincident = (a, b) => ({ id: uid(), type: 'constraint', is_construction: true, kind: 'coincident', data: { a: { ...a }, b: { ...b } } })
 export function hasCoincident(list, a, b) {
-  return list.some((c) => isConstraint(c) && ((sameRef(c.data.a, a) && sameRef(c.data.b, b)) || (sameRef(c.data.a, b) && sameRef(c.data.b, a))))
+  return list.some((c) => isConstraint(c) && c.kind !== 'on_line' && ((sameRef(c.data.a, a) && sameRef(c.data.b, b)) || (sameRef(c.data.a, b) && sameRef(c.data.b, a))))
 }
 
 // Punti che generano vincoli automatici: estremi di linee/spline/archi, vertici di rettangoli, centri
-const AUTO_REF = (e, ref) => isStretch(e, ref) || (e.type === 'arc' && ref !== 'm') || (e.type === 'rect' && ref !== 'c') || ((e.type === 'circle' || e.type === 'ellipse' || e.type === 'slot') && (ref === 'c' || ref === 'k0'))
+// + punti medi delle linee/lati e centri (key-point "di seconda categoria") + entità Punto
+const AUTO_REF = (e, ref) => isStretch(e, ref) || e.type === 'arc' || e.type === 'rect' || ((e.type === 'line' || e.type === 'construction') && ref === 'm') || ((e.type === 'circle' || e.type === 'ellipse' || e.type === 'slot') && (ref === 'c' || ref === 'k0'))
 // Crea i vincoli di coincidenza per gli estremi di `newEnts` che cadono esattamente su punti esistenti
 export function autoCoincide(list, newEnts) {
   const pool = [...list, ...newEnts]
@@ -183,8 +221,9 @@ export function syncRefDims(list) {
 // Ritorna { list, err } con err = violazione massima residua (mm o gradi/100).
 export function solve(list, { fixed = [], iters = 400, tol = 1e-7 } = {}) {
   const cons = list.filter((e) => isConstraint(e) && e.kind === 'coincident')
+  const onl = list.filter(isOnLine)
   const dims = list.filter((e) => isLinkedDim(e) && e.driving !== false && e.value > 0)
-  if (!cons.length && !dims.length) return { list, err: 0 }
+  if (!cons.length && !dims.length && !onl.length) return { list, err: 0 }
   const ents = new Map(list.map((e) => [e.id, e]))
   const fx = new Set(fixed)
   const fixedEnt = (id) => fx.has(id) || [...fx].some((k) => k.startsWith(id + ':'))
@@ -221,6 +260,16 @@ export function solve(list, { fixed = [], iters = 400, tol = 1e-7 } = {}) {
     }
   }
   const heavier = (A, B) => anchored.has(A.id) && !anchored.has(B.id)
+  // "peso" di un'entità = numero di vincoli/quote che la toccano (+ancoraggio): si muove la meno vincolata
+  const weight = (id) => {
+    let w = anchored.has(id) ? 2 : 0
+    for (const e of list) {
+      if (isConstraint(e)) w += (e.data.a.id === id) + (e.data.b.id === id)
+      else if (isLinkedDim(e) && e.driving !== false) w += (e.targetId === id) + (e.pa?.id === id) + (e.pb?.id === id)
+    }
+    return w
+  }
+  const rot = (p, c, ang) => { const r = ang * Math.PI / 180, dx = p.x - c.x, dy = p.y - c.y; return { x: c.x + dx * Math.cos(r) - dy * Math.sin(r), y: c.y + dx * Math.sin(r) + dy * Math.cos(r) } }
   let err = 0
 
   const distCon = (A, B, v) => {
@@ -281,12 +330,25 @@ export function solve(list, { fixed = [], iters = 400, tol = 1e-7 } = {}) {
         const cur = arcSweep(ua, ub)
         const delta = ((v - cur + 540) % 360) - 180
         if (Math.abs(delta) < 1e-6) continue
-        const rb = { id: B.id, ref: other(dm.lb.v) }, ra = { id: A.id, ref: other(dm.la.v) }
-        if (!isFixed(rb) && !fx.has(B.id)) S(rb, polar(vb, dist(vb, fb_), ub + delta))
-        else if (!isFixed(ra) && !fx.has(A.id)) S(ra, polar(va, dist(va, fa_), ua - delta))
-        else continue
+        // rotazione rigida della linea meno vincolata attorno all'intersezione delle due linee
+        const Pi = lineIntersection(ea.p1, ea.p2, eb.p1, eb.p2) || vb
+        const canRot = (L, e) => !fx.has(L.id) && ['p1', 'p2'].every((r) => !fx.has(`${L.id}:${r}`) || dist(e[r], Pi) < 1e-6)
+        const wa = canRot(A, ea) ? weight(A.id) : Infinity, wb = canRot(B, eb) ? weight(B.id) : Infinity
+        if (wa === Infinity && wb === Infinity) continue
+        const [L, e, ang] = wb <= wa ? [B, eb, delta] : [A, ea, -delta]
+        const q1 = rot(e.p1, Pi, ang), q2 = rot(e.p2, Pi, ang)
+        ents.set(L.id, { ...L, data: { ...L.data, x1: q1.x, y1: q1.y, x2: q2.x, y2: q2.y } })
         err = Math.max(err, Math.abs(delta) / 100)
       }
+    }
+    for (const c of onl) {
+      const A = c.data.a, l = ents.get(c.data.b.id), pa = P(A)
+      if (!l || !pa) continue
+      const q = projectOnLine(l, pa), d = dist(pa, q)
+      if (d < tol) continue
+      err = Math.max(err, d)
+      if (!isFixed(A)) S(A, q)
+      else if (!fixedEnt(l.id)) ents.set(l.id, shift(l, pa.x - q.x, pa.y - q.y))
     }
     if (err < tol) break
   }
@@ -299,7 +361,8 @@ export function residual(list) {
   const byId = new Map(list.map((e) => [e.id, e]))
   let err = 0
   for (const c of list) {
-    if (isConstraint(c)) {
+    if (isOnLine(c)) err = Math.max(err, onLineErr(byId, c))
+    else if (isConstraint(c)) {
       const a = refPt(byId, c.data.a), b = refPt(byId, c.data.b)
       if (a && b) err = Math.max(err, dist(a, b))
     } else if (isLinkedDim(c) && c.driving !== false && c.value > 0) {
@@ -327,7 +390,8 @@ export function constraintPos(c, byId) { return refPt(byId, c.data.a) }
 
 // ---------------------------------------------------------------- persistenza
 // Il backend salva solo type/data/is_construction: i campi extra viaggiano in data._meta
-const META_KEYS = ['targetId', 'param', 'side', 'driving', 'value', 'pa', 'pb', 'la', 'lb', 'kind']
+// lo = offset etichetta della quota RELATIVO al suo punto medio (mm, {dx, dy})
+const META_KEYS = ['targetId', 'param', 'side', 'driving', 'value', 'pa', 'pb', 'la', 'lb', 'kind', 'lo']
 export function packEnt(e) {
   const meta = {}
   for (const k of META_KEYS) if (e[k] !== undefined) meta[k] = e[k]
@@ -364,6 +428,7 @@ export function acceptGeometry(list, tol = SOLVE_TOL) {
   const byId = new Map(list.map((e) => [e.id, e]))
   return list.filter((c) => {
     if (!isConstraint(c)) return true
+    if (isOnLine(c)) return onLineErr(byId, c) <= tol
     const a = refPt(byId, c.data.a), b = refPt(byId, c.data.b)
     return !a || !b || dist(a, b) <= tol
   }).map((e) => {

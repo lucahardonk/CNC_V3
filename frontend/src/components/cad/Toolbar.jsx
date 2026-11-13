@@ -22,6 +22,7 @@ const I = {
   slot: ico(<rect x="2" y="8" width="20" height="8" rx="4" />),
   spline: ico(<><path d="M3 17c3-8 6-8 9-4s6 4 9-4" /><Dot x={3} y={17} /><Dot x={12} y={13} /><Dot x={21} y={9} /></>),
   mirrorLine: ico(<><path d="M12 3v18" /><path d="M8 7 4 12l4 5" /><path d="m16 7 4 5-4 5" /></>),
+  point: ico(<><circle cx="12" cy="12" r="3.5" /><path d="M12 4v4M12 16v4M4 12h4M16 12h4" /></>),
   dim: ico(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="m7 9-3 3 3 3M17 9l3 3-3 3" /></>),
 }
 
@@ -30,6 +31,7 @@ const T = (id, icon, label, help) => ({ id, icon, label, help })
 // Gruppi di strumenti: ogni gruppo ha un tasto, il tasto cicla tra le varianti.
 export const TOOL_GROUPS = [
   { id: 'select', key: 'S', items: [T('select', MousePointer2, 'Seleziona', 'Click per selezionare (Shift = aggiungi), trascina per box-select, trascina un oggetto selezionato per spostarlo.')] },
+  { id: 'point', key: 'I', items: [T('point', I.point, 'Punto (Pt)', 'Click sul canvas = punto libero · click su una linea = punto vincolato sulla linea (scorre su di essa) · click su un punto chiave = punto coincidente.')] },
   { id: 'line', key: 'L', label: 'Linea', items: [
     T('line', Slash, 'Linea punto-punto', 'Click inizio, click fine (concatena). Shift = orto. Esc/tasto destro per terminare.'),
     T('line_midpoint', I.lineMid, 'Linea dal punto medio', 'Click punto medio, click estremo: la linea si estende simmetrica.'),
