@@ -29,7 +29,7 @@ environment:
 La porta può essere cambiata anche dall'interfaccia: **Impostazioni (⚙) → Macchina**.
 
 **Modalità simulazione:** se la porta seriale non esiste, il backend passa automaticamente a un GRBL simulato (badge `SIM` in alto a destra), utile per testare senza macchina.
-> Nota: se `/dev/ttyACM0` non esiste sull'host, Docker rifiuta di avviare un container con `devices:` mappato. In quel caso commenta la sezione `devices:` in `docker-compose.yml`.
+> Nota: per default la sezione `devices:` in `docker-compose.yml` è commentata (Docker rifiuta di avviare il container se il device non esiste sull'host). Quando la CNC è collegata via USB, decommenta **entrambe** le righe (`devices:` e `- /dev/ttyACM0:/dev/ttyACM0`) e riavvia con `docker compose up -d`.
 
 Per l'accesso alla seriale l'utente potrebbe dover appartenere al gruppo `dialout` (`sudo usermod -aG dialout $USER`).
 

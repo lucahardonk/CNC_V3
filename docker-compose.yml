@@ -5,8 +5,9 @@ services:
     container_name: cnc_v3
     ports:
       - "5550:5550"
-    devices:
-      - /dev/ttyACM0:/dev/ttyACM0
+    # Decommentare le righe devices quando la CNC è collegata via USB:
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0
     volumes:
       - ./data:/app/data
     restart: unless-stopped
