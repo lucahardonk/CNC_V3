@@ -1,9 +1,11 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Edges, GizmoHelper, GizmoViewport, Grid, Html, Line, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { MATERIAL_COLORS, useStore } from '../../store/store'
 import { parseGcode } from '../../utils/gcodeParser'
+import { Layers } from '../../services/api'
+import { arcSweep, polar, primitives } from '../cad/geometry'
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1)
 
@@ -49,6 +51,50 @@ export function Toolpath({ gcode, rapidColor = '#facc15', cutColor = '#fb923c', 
   )
 }
 
+// Profilo originale del CAD (riferimento per capire se il taglio è interno/esterno/sulla linea)
+export const PROFILE_COLOR = '#0e7490'
+const SKIP_TYPES = new Set(['dimension', 'dim_radial', 'dim_angle', 'constraint', 'bridge', 'point', 'construction'])
+const PROFILE_Z = 0.05
+function profileSegments(entities) {
+  const out = []
+  const push = (a, b) => out.push(a.x, a.y, PROFILE_Z, b.x, b.y, PROFILE_Z)
+  for (const e of entities || []) {
+    if (!e?.data || e.is_construction || SKIP_TYPES.has(e.type)) continue
+    let prims
+    try { prims = primitives(e) } catch { continue }
+    for (const p of prims) {
+      if (p.kind === 'seg') { push(p.a, p.b); continue }
+      // cerchio/arco: angoli in gradi, verso antiorario da start a end
+      const full = p.start === undefined
+      const sweep = full ? 360 : arcSweep(p.start, p.end)
+      const n = Math.max(8, Math.ceil(sweep / 3))
+      const a0 = full ? 0 : p.start
+      let prev = polar(p.c, p.r, a0)
+      for (let i = 1; i <= n; i++) { const q = polar(p.c, p.r, a0 + (sweep * i) / n); push(prev, q); prev = q }
+    }
+  }
+  return new Float32Array(out)
+}
+export function ProfileOutline({ entities, color = PROFILE_COLOR, opacity = 0.9 }) {
+  const geo = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(profileSegments(entities), 3))
+    return g
+  }, [entities])
+  return <lineSegments geometry={geo} renderOrder={-1}><lineBasicMaterial color={color} transparent opacity={opacity} /></lineSegments>
+}
+// Entità del layer (caricate dal backend; errori ignorati)
+export function useLayerEntities(layerId) {
+  const [ents, setEnts] = useState([])
+  useEffect(() => {
+    let alive = true
+    setEnts([])
+    if (layerId) Layers.entities(layerId).then((l) => { if (alive) setEnts(Array.isArray(l) ? l : []) }).catch(() => {})
+    return () => { alive = false }
+  }, [layerId])
+  return ents
+}
+
 export function SceneBase({ project, children, cameraDist }) {
   const d = cameraDist || Math.max(project.stock_x, project.stock_y) * 1.1 + 50
   return (
@@ -69,6 +115,7 @@ export function SceneBase({ project, children, cameraDist }) {
 
 export default function StockViewer({ project, layers, activeLayerId }) {
   const active = layers.find((l) => l.id === activeLayerId)
+  const activeEnts = useLayerEntities(active?.id)
   return (
     <div className="relative h-full w-full">
       <SceneBase project={project}>
@@ -76,6 +123,7 @@ export default function StockViewer({ project, layers, activeLayerId }) {
         {layers.filter((l) => l.gcode && l.id !== activeLayerId).map((l) => (
           <Toolpath key={l.id} gcode={l.gcode} showRapid={false} cutColor="#64748b" opacity={0.5} />
         ))}
+        {active && <ProfileOutline entities={activeEnts} />}
         {active?.gcode && <Toolpath gcode={active.gcode} />}
       </SceneBase>
       <div className="pointer-events-none absolute left-3 top-3 space-y-1 rounded-md bg-black/60 px-3 py-2 text-xs text-gray-300">
@@ -86,7 +134,7 @@ export default function StockViewer({ project, layers, activeLayerId }) {
       </div>
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-gray-400">
         Sinistro: ruota · Destro: pan · Rotella: zoom
-        <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 <span className="ml-2 text-orange-400">━</span> taglio G1</span>
+        <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 <span className="ml-2 text-orange-400">━</span> taglio G1 <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale</span>
       </div>
     </div>
   )

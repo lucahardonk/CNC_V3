@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Crosshair, Pause, Play, Square } from 'lucide-react'
-import { SceneBase, StockMesh, Toolpath } from '../viewer3d/StockViewer'
+import { PROFILE_COLOR, ProfileOutline, SceneBase, StockMesh, Toolpath, useLayerEntities } from '../viewer3d/StockViewer'
 import Modal from '../common/Modal'
 import Button from '../common/Button'
 import JogController from './JogController'
@@ -31,6 +31,7 @@ export default function CuttingView({ project, layer, onBack, onLayerUpdated }) 
   const [confirmPlay, setConfirmPlay] = useState(false)
   const tool = tools.find((t) => t.id === layer.tool_id)
   const parsed = useMemo(() => parseGcode(layer.gcode), [layer.gcode])
+  const profileEnts = useLayerEntities(layer.id)
   const job = grbl.job || {}
   const myJob = job.layer_id === layer.id
   const running = myJob && job.running
@@ -61,11 +62,15 @@ export default function CuttingView({ project, layer, onBack, onLayerUpdated }) 
       <div className="relative min-h-0 flex-1">
         <SceneBase project={project}>
           <StockMesh project={project} opacity={0.3} />
+          <ProfileOutline entities={profileEnts} />
           <Toolpath gcode={layer.gcode} rapidColor="#facc15" cutColor="#22d3ee" />
           <ToolBit pos={pos} diameter={tool?.diameter || 3} />
         </SceneBase>
         <div className="pointer-events-none absolute left-3 top-3 space-y-1 rounded-md bg-black/60 px-3 py-2 font-mono text-xs text-gray-300">
           <div>X {pos[0].toFixed(3)}</div><div>Y {pos[1].toFixed(3)}</div><div>Z {pos[2].toFixed(3)}</div>
+        </div>
+        <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-gray-400">
+          <span className="text-yellow-400">━</span> rapido G0 <span className="ml-2 text-cyan-400">━</span> taglio G1 <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale · utensile Ø {tool?.diameter || 3} mm in scala
         </div>
         {grbl.simulated && <div className="absolute right-3 top-12 rounded-md border border-yellow-500/40 bg-black/70 px-3 py-1 text-[11px] text-yellow-300">Modalità simulazione: nessuna macchina collegata</div>}
       </div>
