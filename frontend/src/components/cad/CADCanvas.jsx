@@ -7,7 +7,7 @@ import {
 } from './geometry'
 import {
   ORIGIN_ID, autoCoincide, coincident, constraintPos, fillDimValues, getPt, hasCoincident, isConstraint, isGeo, isLinkedDim, isStretch,
-  isOnLine, measureDim, namedPoints, onLine, pointKind, setPt, solveCommit, syncRefDims,
+  isOnLine, measureDim, namedPoints, onLine, pointKind, refilletArc, setPt, solveCommit, syncRefDims,
 } from './constraints'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
 
@@ -779,6 +779,13 @@ export default function CADCanvas({
     if (!(val > 0)) return notify('La quota deve essere maggiore di 0')
     if (dim.la && !(val < 180)) return notify("L'angolo deve essere compreso tra 0° e 180°")
     if (Math.abs(val - cur) < 1e-9) return
+    // raggio di un raccordo: linee ancorate agli estremi lontani, si spostano solo i punti di tangenza
+    if (dim.targetId && entMap.get(dim.targetId)?.type === 'arc' && (dim.param === 'radius' || dim.param === 'diameter')) {
+      const withVal = entities.map((x) => (x.id === dim.id ? { ...x, value: val } : x))
+      const rf = refilletArc(withVal, dim.targetId, dim.param === 'diameter' ? val / 2 : val)
+      if (rf === null) return notify('Raggio non compatibile con il raccordo (linee troppo corte): modifica annullata', 'error')
+      if (rf) return onChange(rf.list, { fixed: rf.fixed, refresh: false })
+    }
     // la quota guida prende il nuovo valore e il solver riposiziona la geometria (primo riferimento fermo)
     const fixed = dim.targetId ? (entMap.get(dim.targetId)?.type === 'rect' ? [] : [`${dim.targetId}:p1`])
       : dim.pa ? [keyOf(dim.pa)] : [] // angolo: il solver ruota la linea meno vincolata

@@ -1,7 +1,7 @@
 // Vincoli geometrici del CAD: punti con nome, vincolo di coincidenza (anche con l'origine)
 // e quote guida con valore (lunghezza, larghezza/altezza, raggio/diametro, distanza tra punti, angolo).
 // Il solver è un rilassamento iterativo (Gauss-Seidel): semplice, robusto per schizzi piccoli.
-import { EPS, angleOf, arcSweep, dist, isDim, keyPoints, lineIntersection, polar, rectLines, uid } from './geometry'
+import { EPS, add, angleOf, arcSweep, dist, dot, isDim, keyPoints, lineIntersection, mul, polar, rectLines, sub, uid, unit } from './geometry'
 
 export const ORIGIN_ID = '__origin'
 export const isConstraint = (e) => e?.type === 'constraint'
@@ -440,6 +440,51 @@ export function acceptGeometry(list, tol = SOLVE_TOL) {
     return off > tol ? { ...e, value: m } : e
   })
 }
+// ---------------------------------------------------------------- raggio di un raccordo
+// Arco i cui estremi s/e sono vincolati (coincidenza) agli estremi di due linee diverse = raccordo.
+// Cambio raggio: gli estremi lontani delle linee restano fermi, si spostano solo i punti di tangenza.
+// Ritorna undefined se l'arco non è un raccordo, null se il raggio non ci sta,
+// altrimenti { list, fixed } (fixed = chiavi da tenere ferme nel solver).
+export function refilletArc(list, arcId, r) {
+  const byId = new Map(list.map((e) => [e.id, e]))
+  const arc = byId.get(arcId)
+  if (!arc || arc.type !== 'arc') return undefined
+  const isLn = (e) => e && (e.type === 'line' || e.type === 'construction')
+  const link = {}
+  for (const c of list) {
+    if (!isConstraint(c) || c.kind === 'on_line') continue
+    for (const [x, y] of [[c.data.a, c.data.b], [c.data.b, c.data.a]]) {
+      if (x.id === arcId && (x.ref === 's' || x.ref === 'e') && !link[x.ref] && isLn(byId.get(y.id)) && (y.ref === 'p1' || y.ref === 'p2')) link[x.ref] = y
+    }
+  }
+  if (!link.s || !link.e || link.s.id === link.e.id) return undefined
+  if (!(r > 0)) return null
+  const ends = (ref) => { const l = lineEnds(byId.get(ref.id)); return { adj: l[ref.ref], far: l[other(ref.ref)] } }
+  const S = ends(link.s), E = ends(link.e)
+  const P = lineIntersection(S.adj, S.far, E.adj, E.far)
+  if (!P) return null
+  const uS = unit(sub(S.far, P)), uE = unit(sub(E.far, P))
+  const theta = Math.acos(Math.max(-1, Math.min(1, dot(uS, uE))))
+  if (theta < 1e-3 || Math.PI - theta < 1e-3) return null
+  const t = r / Math.tan(theta / 2)
+  // il punto di tangenza deve cadere dentro le linee (prima dell'estremo fisso)
+  if (t >= dist(P, S.far) - 1e-4 || t >= dist(P, E.far) - 1e-4) return null
+  const TS = add(P, mul(uS, t)), TE = add(P, mul(uE, t))
+  const C = add(P, mul(unit(add(uS, uE)), r / Math.sin(theta / 2)))
+  const r4 = (v) => Math.round(v * 1e4) / 1e4
+  const out = list.map((e) => {
+    let x = e
+    if (e.id === link.s.id) x = setPt(x, link.s.ref, { x: r4(TS.x), y: r4(TS.y) })
+    if (e.id === link.e.id) x = setPt(x, link.e.ref, { x: r4(TE.x), y: r4(TE.y) })
+    if (e.id === arcId) x = { ...e, data: { ...e.data, cx: C.x, cy: C.y, r, start: angleOf(C, TS), end: angleOf(C, TE) } }
+    // quote radiali guida dell'arco: prendono il nuovo valore (niente conflitto nel solver)
+    if (e.targetId === arcId && e.driving !== false && (e.param === 'radius' || e.param === 'diameter')) x = { ...e, value: e.param === 'diameter' ? 2 * r : r }
+    return x
+  })
+  const fixed = [arcId, ...[link.s.id, link.e.id].flatMap((id) => [`${id}:p1`, `${id}:p2`])]
+  return { list: out, fixed }
+}
+
 // Imposta `value` sulle quote guida collegate che non lo hanno ancora
 export function fillDimValues(list) {
   const byId = new Map(list.map((e) => [e.id, e]))

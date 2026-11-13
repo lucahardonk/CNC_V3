@@ -9,7 +9,7 @@ import { TOOL_TIPS } from '../settings/ToolBox'
 import { errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 import { isDim, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
-import { acceptGeometry, fillDimValues, isConstraint, packEnt, pruneRefs, solveCommit, unpackEnt } from './constraints'
+import { acceptGeometry, fillDimValues, isConstraint, packEnt, pruneRefs, refilletArc, solveCommit, unpackEnt } from './constraints'
 
 const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w: 'Larghezza', h: 'Altezza', cx: 'Centro X', cy: 'Centro Y', r: 'Raggio', start: 'Angolo inizio°', end: 'Angolo fine°', rx: 'Semiasse X', ry: 'Semiasse Y', rotation: 'Rotazione°', length: 'Interasse', width: 'Larghezza', angle: 'Angolo°', off: 'Offset', a1: 'Angolo 1°', a2: 'Angolo 2°' }
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
@@ -126,7 +126,16 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     if (refLine.id === id) return notify('Scegli una linea diversa da quella selezionata')
     constrainLine(id, 'parallel', refLine.data)
   }
-  const updateSel = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)), { fixed: [selEntity.id] })
+  const updateSel = (k, val) => {
+    // raggio di un raccordo dal pannello proprietà: linee ancorate, si spostano solo i punti di tangenza
+    if (selEntity.type === 'arc' && k === 'r') {
+      const rf = refilletArc(latest.current, selEntity.id, Number(val))
+      if (rf === null) return notify('Raggio non compatibile con il raccordo (linee troppo corte): modifica annullata', 'error')
+      if (rf) return commit(rf.list, { fixed: rf.fixed })
+    }
+    return updateSelRaw(k, val)
+  }
+  const updateSelRaw = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)), { fixed: [selEntity.id] })
   const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
 
