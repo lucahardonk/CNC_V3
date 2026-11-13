@@ -425,6 +425,7 @@ export function solveCommit(list, fixed = [], { refresh = true } = {}) {
 // Operazioni "dirette" (disegno, taglio, raccordo, specchio, incolla...): la geometria dell'utente vince.
 // I vincoli di coincidenza violati vengono rimossi, le quote guida prendono il valore attuale.
 export function acceptGeometry(list, tol = SOLVE_TOL) {
+  list = syncRefDims(list) // quote punto-punto e angolari seguono le entità (sposta/ruota/specchia…)
   const byId = new Map(list.map((e) => [e.id, e]))
   return list.filter((c) => {
     if (!isConstraint(c)) return true
