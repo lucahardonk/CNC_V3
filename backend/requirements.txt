@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pyserial==3.5
+aiosqlite==0.20.0
+sqlalchemy[asyncio]==2.0.30
+pydantic==2.7.1
+shapely==2.0.6
+numpy<2.1
+rich==13.7.1
+python-multipart==0.0.9
+aiofiles==23.2.1

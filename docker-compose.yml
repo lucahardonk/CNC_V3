@@ -1,0 +1,20 @@
+services:
+  cnc:
+    build: .
+    image: cnc_v3:latest
+    container_name: cnc_v3
+    ports:
+      - "5550:5550"
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    tty: true
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+      - SERIAL_PORT=/dev/ttyACM0
+      - SERIAL_BAUD=115200
+      - PORT=5550
+      - COLUMNS=160

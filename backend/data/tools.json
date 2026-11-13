@@ -1,0 +1,47 @@
+[
+  {
+    "id": "tool_3mm_3f",
+    "name": "Fresa 3mm 3 taglienti",
+    "diameter": 3.0,
+    "flutes": 3,
+    "type": "upcut_spiral",
+    "material": "carbide",
+    "coating": "none",
+    "max_depth": 20.0,
+    "feed_rate": 900,
+    "plunge_rate": 200,
+    "spindle_rpm": 18000,
+    "step_over": 0.40,
+    "notes": "Ideale per profili fini, incisioni, dettagli. Usa con legno morbido e duro."
+  },
+  {
+    "id": "tool_6mm_3f",
+    "name": "Fresa 6mm 3 taglienti",
+    "diameter": 6.0,
+    "flutes": 3,
+    "type": "upcut_spiral",
+    "material": "carbide",
+    "coating": "none",
+    "max_depth": 30.0,
+    "feed_rate": 1500,
+    "plunge_rate": 300,
+    "spindle_rpm": 16000,
+    "step_over": 0.40,
+    "notes": "Uso generale. Ottima per pockets e profili. Equilibrio tra velocità e precisione."
+  },
+  {
+    "id": "tool_8mm_3f",
+    "name": "Fresa 8mm 3 taglienti",
+    "diameter": 8.0,
+    "flutes": 3,
+    "type": "upcut_spiral",
+    "material": "carbide",
+    "coating": "none",
+    "max_depth": 40.0,
+    "feed_rate": 1800,
+    "plunge_rate": 350,
+    "spindle_rpm": 14000,
+    "step_over": 0.40,
+    "notes": "Sgrossatura rapida, grandi pockets. Non usare per dettagli fini."
+  }
+]

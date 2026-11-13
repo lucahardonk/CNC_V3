@@ -1,0 +1,38 @@
+{
+  "softwood": {
+    "id": "softwood",
+    "name": "Legno Morbido",
+    "description": "Pino, abete, MDF, compensato. Materiale permissivo, ideale per principianti.",
+    "color": "#D4A96A",
+    "feed_rate": 1200,
+    "plunge_rate": 300,
+    "spindle_rpm": 18000,
+    "depth_per_pass": 2.0,
+    "step_over": 0.40,
+    "notes": "Usa fresa 2-3 taglienti upcut. Avanzamento conservativo per CNC leggera."
+  },
+  "hardwood": {
+    "id": "hardwood",
+    "name": "Legno Duro",
+    "description": "Rovere, noce, acero. Richiede parametri più conservativi.",
+    "color": "#6B3F2A",
+    "feed_rate": 800,
+    "plunge_rate": 200,
+    "spindle_rpm": 15000,
+    "depth_per_pass": 1.5,
+    "step_over": 0.35,
+    "notes": "Riduci profondità di passata al 50% del diametro utensile. Verifica rigidità macchina."
+  },
+  "aluminum": {
+    "id": "aluminum",
+    "name": "Alluminio",
+    "description": "Al 6061/3003. Richiede lubrificazione e parametri precisi.",
+    "color": "#A8A9AD",
+    "feed_rate": 400,
+    "plunge_rate": 100,
+    "spindle_rpm": 20000,
+    "depth_per_pass": 0.5,
+    "step_over": 0.30,
+    "notes": "Usa fresa 1 taglio DLC. Lubrifica con WD-40 o aria. Max 1.5mm DOC."
+  }
+}

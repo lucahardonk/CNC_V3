@@ -1,0 +1,42 @@
+{
+  "machine": {
+    "port": "/dev/ttyACM0",
+    "baud_rate": 115200,
+    "work_area_x": 300,
+    "work_area_y": 200,
+    "work_area_z": 100
+  },
+  "cutting": {
+    "safe_height": 5.0,
+    "bridge_height": 1.5,
+    "bridge_width": 4.0,
+    "bridge_auto_spacing": 80.0
+  },
+  "ui": {
+    "grid_size": 1.0,
+    "snap_enabled": true,
+    "snap_distance": 5.0,
+    "theme": "dark"
+  },
+  "grbl": {
+    "status_poll_interval_ms": 250,
+    "jog_step_xy": 1.0,
+    "jog_step_z": 0.1,
+    "jog_feed_xy": 1000,
+    "jog_feed_z": 200
+  },
+  "joystick": {
+    "enabled": true,
+    "deadzone": 0.15,
+    "axis_x": 0,
+    "axis_y": 1,
+    "axis_z": 3,
+    "invert_x": false,
+    "invert_y": true,
+    "invert_z": true,
+    "max_feed_xy": 2000,
+    "max_feed_z": 400,
+    "button_stop": 1,
+    "button_zero_all": 9
+  }
+}
