@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0f0f0f; overflow: hidden; }
+
+@layer components {
+  .input {
+    @apply w-full rounded-md border border-line bg-bg px-2.5 py-1.5 text-sm text-gray-100 outline-none transition
+           focus:border-accent focus:ring-1 focus:ring-accent/40;
+  }
+  .label { @apply mb-1 block text-xs font-medium uppercase tracking-wide text-gray-400; }
+  .panel { @apply rounded-lg border border-line bg-bg-panel; }
+  .kbd { @apply rounded border border-line bg-bg px-1 font-mono text-[10px] text-gray-400; }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #141414; }
+::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
+
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes popIn { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: none } }
+.animate-fade { animation: fadeIn .15s ease-out; }
+.animate-pop { animation: popIn .18s ease-out; }
+
+input[type=number]::-webkit-inner-spin-button { opacity: .4; }

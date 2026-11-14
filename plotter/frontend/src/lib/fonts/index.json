@@ -1,0 +1,58 @@
+[
+ {
+  "id": "hershey_sans",
+  "name": "Hershey Sans"
+ },
+ {
+  "id": "hershey_sans_med",
+  "name": "Hershey Sans Medium"
+ },
+ {
+  "id": "hershey_serif",
+  "name": "Hershey Serif"
+ },
+ {
+  "id": "hershey_serif_italic",
+  "name": "Hershey Serif Italic"
+ },
+ {
+  "id": "hershey_serif_bold",
+  "name": "Hershey Serif Bold"
+ },
+ {
+  "id": "hershey_script",
+  "name": "Hershey Script (corsivo)"
+ },
+ {
+  "id": "hershey_script_med",
+  "name": "Hershey Script Medium"
+ },
+ {
+  "id": "hershey_gothic",
+  "name": "Hershey Gothic English"
+ },
+ {
+  "id": "ems_allure",
+  "name": "EMS Allure (calligrafico)"
+ },
+ {
+  "id": "ems_readability",
+  "name": "EMS Readability"
+ },
+ {
+  "id": "ems_readability_italic",
+  "name": "EMS Readability Italic"
+ },
+ {
+  "id": "ems_tech",
+  "name": "EMS Tech"
+ },
+ {
+  "id": "ems_felix",
+  "name": "EMS Felix"
+ },
+ {
+  "id": "ems_nixish",
+  "name": "EMS Nixish"
+ }
+]

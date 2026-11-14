@@ -1,0 +1,19 @@
+services:
+  plottercam:
+    build: .
+    image: plottercam:latest
+    container_name: plottercam
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - MOONRAKER_URL=${MOONRAKER_URL:-http://flsun.home}
+      - MOONRAKER_API_KEY=${MOONRAKER_API_KEY:-}
+      - DATA_DIR=/app/data
+      - PORT=3000
+    # Se "flsun.home" non viene risolto dentro al container, usa l'IP in .env
+    # (es. MOONRAKER_URL=http://192.168.1.132) oppure decommenta:
+    # extra_hosts:
+    #   - "flsun.home:192.168.1.132"
+    restart: unless-stopped
