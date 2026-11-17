@@ -54,7 +54,7 @@ export function Toolpath({ gcode, rapidColor = '#facc15', cutColor = '#fb923c', 
       {showRapid && <lineSegments geometry={rapidGeo}><lineBasicMaterial color={rapidColor} transparent opacity={0.45 * opacity} /></lineSegments>}
       {byLayer
         ? groupGeos.filter((g) => !onlyGroups || onlyGroups.has(g.id)).map((g) => (
-          <lineSegments key={g.id} geometry={g.geo}><lineBasicMaterial color={g.color || cutColor} transparent={opacity < 1} opacity={opacity} /></lineSegments>
+          <lineSegments key={g.id} geometry={g.geo} renderOrder={10}><lineBasicMaterial color={g.color || cutColor} transparent opacity={opacity} depthTest={false} /></lineSegments>
         ))
         : <lineSegments geometry={cutGeo}><lineBasicMaterial color={cutColor} transparent={opacity < 1} opacity={opacity} /></lineSegments>}
     </group>

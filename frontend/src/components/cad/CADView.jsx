@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Cog, Copy, FileUp, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
+import { ArrowLeft, Box, Check, Cog, Copy, Download, FileUp, Layers as LayersIcon, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
 import CADCanvas from './CADCanvas'
 import Toolbar from './Toolbar'
 import Modal from '../common/Modal'
 import Button from '../common/Button'
 import Tooltip from '../common/Tooltip'
 import { TOOL_TIPS } from '../settings/ToolBox'
-import { Dxf, errMsg, Layers } from '../../services/api'
+import { Dxf, errMsg, Export, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 import { arcSweep, catmullRomPoints, isDim, rad, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
 import DrawLayerPanel, { NewLayerModal } from './DrawLayerPanel'
@@ -39,6 +39,11 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   activeDLRef.current = drawLayers.some((l) => l.id === activeDL) ? activeDL : DEFAULT_LAYER_ID
   const dlTimer = useRef(null)
   const [newLayerFor, setNewLayerFor] = useState(false) // dialog "nuovo layer" dal menu contestuale
+  const [assignOpen, setAssignOpen] = useState(false) // dialog "Sposta a layer…"
+  // ---- G-code per layer di disegno: '' = tutti i layer visibili
+  const [gcodeScope, setGcodeScope] = useState(() => layer.params?.draw_layer_id || '')
+  const [genDL, setGenDL] = useState(null) // layer di disegno della dialog Genera (null = tutti)
+  const [canvasMeasure, setCanvasMeasure] = useState(null) // misura attiva nel canvas (strumento distanza)
   // ---- import DXF
   const fileRef = useRef(null)
   const [dxfData, setDxfData] = useState(null)
@@ -250,6 +255,13 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   }
   const updateSelRaw = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)), { fixed: [selEntity.id] })
   const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
+  const openGenerate = async (dlId) => {
+    await save()
+    setGenDL(dlId || null)
+    setGenOpen(true)
+  }
+  const scopeLayer = drawLayers.find((l) => l.id === gcodeScope && l.visible)
+  const openAssign = () => (selCount ? setAssignOpen(true) : notify('Seleziona prima una o più entità nel canvas'))
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
 
   return (
@@ -276,7 +288,14 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
         </label>
         <div className="ml-auto flex items-center gap-2">
           {layer.gcode && <Button size="sm" variant="outline" icon={Play} onClick={async () => { await save(); onStartCutting() }}>Taglia</Button>}
-          <Button size="sm" variant="primary" icon={Cog} disabled={!cutEntities.length} onClick={async () => { await save(); setGenOpen(true) }}>Genera Percorso</Button>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400" title="Layer di disegno usato da «Genera Percorso» (▶ nel pannello Layer genera direttamente un singolo layer)">G-code:
+            <span className="h-3 w-3 shrink-0 rounded-sm border border-black/40" style={{ background: scopeLayer?.color || 'conic-gradient(#ef4444,#eab308,#22c55e,#3b82f6,#ef4444)' }} />
+            <select className="input w-40 py-1 text-xs" value={scopeLayer ? gcodeScope : ''} onChange={(e) => setGcodeScope(e.target.value)}>
+              <option value="">Tutti i layer visibili</option>
+              {drawLayers.filter((l) => l.visible).map((l) => <option key={l.id} value={l.id} disabled={!dlCounts[l.id]}>Solo: {l.name} ({dlCounts[l.id] || 0})</option>)}
+            </select>
+          </label>
+          <Button size="sm" variant="primary" icon={Cog} disabled={!cutEntities.length} onClick={() => openGenerate(scopeLayer?.id)}>{scopeLayer ? `Genera «${scopeLayer.name}»` : 'Genera Percorso'}</Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
@@ -294,7 +313,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             <CADCanvas entities={entities} onChange={commit} selected={selected} setSelected={setSelected} tool={tool} setTool={setTool}
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
               onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} pickLine={parallelFor ? onPickParallel : null}
-              drawLayers={drawLayers} fitRequest={fitRequest} />
+              drawLayers={drawLayers} fitRequest={fitRequest} onMeasure={setCanvasMeasure} />
           )}
         </div>
         <aside className="flex w-72 shrink-0 flex-col border-l border-line bg-bg-panel text-sm">
@@ -302,15 +321,28 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             onToggleVisible={toggleVisible} onToggleLock={toggleLock}
             onColor={(id, color) => updateDrawLayers((ls) => ls.map((x) => (x.id === id ? { ...x, color } : x)))}
             onRename={(id, name) => updateDrawLayers((ls) => ls.map((x) => (x.id === id ? { ...x, name } : x)))}
-            onAdd={addDrawLayer} onDelete={deleteDrawLayer} onAssignSelection={assignSelection} />
+            onAdd={addDrawLayer} onDelete={deleteDrawLayer} onAssignSelection={assignSelection}
+            onOpenAssign={openAssign} onGenerateLayer={(id) => openGenerate(id)} gcodeLayerId={layer.gcode ? layer.params?.draw_layer_id : null} />
           <div className="min-h-0 flex-1 overflow-y-auto border-t border-line p-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400"><Ruler size={13} /> Proprietà / Misure</div>
+          {canvasMeasure?.distance != null ? (
+            <div className="mb-3 rounded-md border border-cyan-500/50 bg-cyan-500/10 p-2 text-xs">
+              <div className="text-sm font-semibold text-cyan-200" data-testid="dist-summary">Distanza: {canvasMeasure.distance.toFixed(2)} mm</div>
+              <div className="mt-1 space-y-0.5 font-mono text-[11px] text-gray-300">{canvasMeasure.rows.slice(1).map(([k, v]) => <div key={k} className="flex justify-between"><span className="text-gray-400">{k}</span><span>{v}</span></div>)}</div>
+            </div>
+          ) : tool === 'measure_dist' && (
+            <div className="mb-3 rounded-md border border-cyan-500/40 bg-cyan-500/5 p-2 text-xs text-cyan-200">
+              Misura distanza: {canvasMeasure?.first ? 'punto A fissato — click sul punto B' : 'click sul punto A, poi sul punto B'}
+            </div>
+          )}
           {selEntity ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-white">{selEntity.kind === 'on_line' ? 'Vincolo punto su linea' : TYPE_NAMES[selEntity.type] || selEntity.type}</span>
                 {selEntity.is_construction && !isDim(selEntity) && !isConstraint(selEntity) && <span className="rounded bg-gray-700 px-1.5 text-[10px] text-gray-300">costruzione</span>}
               </div>
+              <EntityMeasures e={selEntity} />
+              {!isDim(selEntity) && !isConstraint(selEntity) && <LayerAssignBox layers={drawLayers} layerIds={[layerOf(selEntity)]} count={1} onOpen={openAssign} />}
               <div className="grid grid-cols-2 gap-2">
                 {Object.keys(selEntity.data).filter((k) => typeof selEntity.data[k] === 'number').map((k) => (
                   <div key={k}>
@@ -343,8 +375,6 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                   </div>
                 </div>
               )}
-              <EntityMeasures e={selEntity} />
-              {!isDim(selEntity) && !isConstraint(selEntity) && <LayerSelect layers={drawLayers} value={layerOf(selEntity)} onChange={assignSelection} />}
               <div className="flex flex-wrap gap-1.5">
                 {selEntity.type !== 'bridge' && !isDim(selEntity) && !isConstraint(selEntity) && <Button size="xs" icon={Repeat} onClick={toggleConstruction}>{selEntity.is_construction ? 'Normale' : 'Costruzione'}</Button>}
                 {!isConstraint(selEntity) && <Button size="xs" icon={Copy} onClick={duplicate}>Duplica</Button>}
@@ -353,9 +383,8 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             </div>
           ) : selected.size > 1 ? (
             <div className="space-y-3">
-              <div className="font-semibold text-white">{selected.size} entità selezionate</div>
               <MultiMeasures list={entities.filter((e) => selected.has(e.id))} />
-              <LayerSelect layers={drawLayers} value={selLayers.size === 1 ? [...selLayers][0] : ''} onChange={assignSelection} label="Sposta a layer" />
+              {selCount > 0 && <LayerAssignBox layers={drawLayers} layerIds={[...selLayers]} count={selCount} onOpen={openAssign} />}
               <div className="flex flex-wrap gap-1.5">
                 <Button size="xs" icon={Repeat} onClick={toggleConstruction}>Costruzione ⇄</Button>
                 <Button size="xs" icon={Copy} onClick={duplicate}>Duplica</Button>
@@ -365,7 +394,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             </div>
           ) : (
             <div className="space-y-3 text-xs text-gray-400">
-              <div className="text-sm font-semibold text-white">Proprietà</div>
+              <div className="rounded-md border border-dashed border-line bg-bg p-2.5 text-center text-sm text-gray-300" data-testid="no-selection">Seleziona un'entità per vedere le misure</div>
               <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2 leading-relaxed">
                 <div className="mb-1 font-semibold text-gray-200">Come si usa</div>
                 <ul className="list-disc space-y-0.5 pl-4">
@@ -373,8 +402,9 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                   <li><b className="text-gray-300">Trascina</b> nel vuoto → selezione rettangolare</li>
                   <li><span className="kbd">Ctrl</span>/<span className="kbd">Shift</span>+click → aggiungi/rimuovi dalla selezione</li>
                   <li><span className="kbd">Esc</span> → deseleziona tutto</li>
-                  <li><b className="text-gray-300">Tasto destro</b> → «Assegna a layer»</li>
-                  <li><b className="text-gray-300">Misura distanza</b> (toolbar, <span className="kbd">N</span>): click su A poi su B</li>
+                  <li><b className="text-gray-300">Sposta a layer…</b> (pannello Layer/Proprietà o tasto destro) → cambia layer alla selezione</li>
+                  <li><b className="text-gray-300">▶</b> accanto a un layer → G-code solo di quel layer</li>
+                  <li><b className="text-gray-300">Misura distanza</b> (toolbar, <span className="kbd">K</span>): click su A poi su B</li>
                   <li><b className="text-gray-300">Importa DXF</b> in alto per caricare un disegno</li>
                 </ul>
               </div>
@@ -422,18 +452,23 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
         </div>
       )}
 
+      <AssignLayerModal open={assignOpen} layers={drawLayers} counts={dlCounts} current={selLayers} count={selCount}
+        onClose={() => setAssignOpen(false)} onPick={(id) => { assignSelection(id); setAssignOpen(false) }}
+        onNew={() => { setAssignOpen(false); setNewLayerFor(true) }} />
       <NewLayerModal open={newLayerFor} layers={drawLayers} selectionCount={selCount} title="Nuovo layer per la selezione"
         onCancel={() => setNewLayerFor(false)} onCreate={(n, c) => { const id = addDrawLayer(n, c); assignSelection(id, n); setNewLayerFor(false) }} />
       {dxfData && <DxfImportModal data={dxfData} stock={{ x: project.stock_x, y: project.stock_y }} onClose={() => setDxfData(null)} onConfirm={confirmDxf} />}
 
       <GenerateModal open={genOpen} onClose={() => setGenOpen(false)} project={project} layer={layer} tools={tools} materials={materials}
-        settings={settings} hasBridges={entities.some((e) => e.type === 'bridge')}
-        onDone={(l) => onLayerUpdated(l)} onStartCutting={() => { setGenOpen(false); onStartCutting() }} />
+        settings={settings} hasBridges={entities.some((e) => e.type === 'bridge')} drawLayer={drawLayers.find((l) => l.id === genDL) || null}
+        drawLayerCount={genDL ? dlCounts[genDL] || 0 : null}
+        onDone={(l) => onLayerUpdated(l)} onStartCutting={() => { setGenOpen(false); onStartCutting() }}
+        onView3D={async () => { setGenOpen(false); await save(); onClose() }} />
     </div>
   )
 }
 
-function GenerateModal({ open, onClose, project, layer, tools, materials, settings, hasBridges, onDone, onStartCutting }) {
+function GenerateModal({ open, onClose, project, layer, tools, materials, settings, hasBridges, onDone, onStartCutting, onView3D, drawLayer, drawLayerCount }) {
   const notify = useStore((s) => s.notify)
   const mat = materials[project.material] || {}
   const prev = layer.params || {}
@@ -460,22 +495,38 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
       bridge_height: settings?.cutting?.bridge_height ?? 1.5, ...defaultsFor(toolId),
       ...(prev.tool_id === toolId ? { feed_rate: prev.feed_rate, plunge_rate: prev.plunge_rate, spindle_rpm: prev.spindle_rpm, step_over: prev.step_over, depth_per_pass: prev.depth_per_pass } : {}),
     })
-  }, [open])
+  }, [open, drawLayer?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
   const setTool = (id) => setF((p) => ({ ...p, tool_id: id, ...defaultsFor(id) }))
   const tool = tools.find((t) => t.id === f.tool_id)
 
+  const makeBody = () => {
+    const body = { ...f, draw_layer_id: drawLayer?.id || null }
+    for (const k of ['depth_total', 'depth_per_pass', 'feed_rate', 'plunge_rate', 'spindle_rpm', 'step_over', 'safe_height', 'bridge_height']) body[k] = Number(body[k])
+    return body
+  }
   const generate = async () => {
     setBusy(true)
     try {
-      const body = { ...f }
-      for (const k of ['depth_total', 'depth_per_pass', 'feed_rate', 'plunge_rate', 'spindle_rpm', 'step_over', 'safe_height', 'bridge_height']) body[k] = Number(body[k])
-      const r = await Layers.generate(layer.id, body)
+      const r = await Layers.generate(layer.id, makeBody())
       setResult(r)
       onDone(r.layer)
-      notify('G-code generato', 'success')
+      notify(drawLayer ? `G-code generato solo per il layer «${drawLayer.name}»` : 'G-code generato', 'success')
     } catch (e) { notify(errMsg(e), 'error') } finally { setBusy(false) }
+  }
+  const download = async () => {
+    try {
+      const { blob, filename } = await Export.layerGcodeFile(layer.id, makeBody())
+      const url = URL.createObjectURL(blob)
+      const a = Object.assign(document.createElement('a'), { href: url, download: filename })
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      let msg = errMsg(e)
+      if (e?.response?.data instanceof Blob) { try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* noop */ } }
+      notify(`Download fallito: ${msg}`, 'error')
+    }
   }
 
   const num = (k, label, step = 0.1, tip) => (
@@ -486,13 +537,21 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
   )
 
   return (
-    <Modal open={open} onClose={onClose} title="Genera percorso utensile" width="max-w-2xl"
+    <Modal open={open} onClose={onClose} title={drawLayer ? `Genera G-code — layer «${drawLayer.name}»` : 'Genera percorso utensile'} width="max-w-3xl"
       footer={<>
         <Button onClick={onClose}>Chiudi</Button>
+        <Button variant="outline" icon={Download} disabled={busy || !f.tool_id} onClick={download} title="Scarica il file .nc con i parametri attuali (POST /api/export/layer/…)">Scarica .nc</Button>
+        {result && <Button variant="outline" icon={Box} onClick={onView3D}>Vedi nel 3D</Button>}
         {result && <Button variant="outline" icon={Play} onClick={onStartCutting}>Vai al taglio</Button>}
         <Button variant="primary" icon={Cog} disabled={busy || !f.tool_id} onClick={generate}>{busy ? 'Generazione…' : 'Genera G-code'}</Button>
       </>}>
       <div className="space-y-4">
+        <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${drawLayer ? 'border-accent/50 bg-accent/10 text-gray-200' : 'border-line bg-bg text-gray-400'}`}>
+          {drawLayer ? (<>
+            <span className="h-3.5 w-3.5 shrink-0 rounded-sm border border-black/40" style={{ background: drawLayer.color }} />
+            <span>Solo le entità visibili del layer di disegno <b className="text-white">{drawLayer.name}</b> ({drawLayerCount} entità). Gli altri layer sono esclusi.</span>
+          </>) : (<><LayersIcon size={14} /><span>Tutti i layer di disegno visibili (i layer nascosti sono esclusi). Nel viewer 3D ogni layer ha il suo colore.</span></>)}
+        </div>
         <div>
           <span className="label">Operazione</span>
           <div className="grid grid-cols-4 gap-2">
@@ -598,7 +657,23 @@ function EntityMeasures({ e }) {
     if (L != null) rows = <Row k={e.type === 'spline' ? 'Lunghezza (approx.)' : 'Perimetro'} v={mm(L)} strong />
   }
   if (!rows) return null
-  return <div className="space-y-1 rounded-md border border-accent/30 bg-accent/5 p-2 text-xs">{rows}</div>
+  const sum = measureSummary(e)
+  return (
+    <div className="space-y-1 rounded-md border border-accent/30 bg-accent/5 p-2 text-xs">
+      {sum && <div className="mb-1 border-b border-accent/20 pb-1.5 text-[13px] font-semibold text-accent" data-testid="measure-summary">{sum}</div>}
+      {rows}
+    </div>
+  )
+}
+
+const degShort = (v) => `${+(+v).toFixed(2)}°`
+// riepilogo in una riga (formato richiesto nel pannello Proprietà)
+function measureSummary(e) {
+  const d = e.data
+  if (e.type === 'line' || e.type === 'construction') return `Lunghezza: ${mm(Math.hypot(d.x2 - d.x1, d.y2 - d.y1))}`
+  if (e.type === 'circle') return `Diametro: ${mm(2 * d.r)} | Raggio: ${mm(d.r)}`
+  if (e.type === 'arc') return `Raggio: ${mm(d.r)} | Angolo: ${degShort(d.start)}→${degShort(d.end)} | Lunghezza arco: ${mm(d.r * rad(arcSweep(d.start, d.end)))}`
+  return null
 }
 
 function MultiMeasures({ list }) {
@@ -610,7 +685,7 @@ function MultiMeasures({ list }) {
   for (const e of list) byType[e.type] = (byType[e.type] || 0) + 1
   return (
     <div className="space-y-1 rounded-md border border-accent/30 bg-accent/5 p-2 text-xs">
-      <Row k="Entità" v={list.length} />
+      <div className="mb-1 border-b border-accent/20 pb-1.5 text-[13px] font-semibold text-accent" data-testid="multi-summary">{list.length} entità selezionate | Lunghezza totale linee: {mm(lineLen)}</div>
       <Row k={`Lunghezza linee (${lines.length})`} v={mm(lineLen)} strong />
       {total - lineLen > 1e-9 && <Row k="Lunghezza totale (tutte)" v={mm(total)} />}
       <div className="pt-1 text-[11px] text-gray-500">{Object.entries(byType).map(([t, n]) => `${TYPE_NAMES[t] || t}: ${n}`).join(' · ')}</div>
@@ -618,18 +693,50 @@ function MultiMeasures({ list }) {
   )
 }
 
-function LayerSelect({ layers, value, onChange, label = 'Layer' }) {
-  const cur = layers.find((l) => l.id === value)
+// layer delle entità selezionate (pallino colore = colore nel canvas) + pulsante "Sposta a layer…"
+function LayerAssignBox({ layers, layerIds, count, onOpen }) {
+  const ls = layerIds.map((id) => layers.find((l) => l.id === id)).filter(Boolean)
   return (
-    <div>
-      <span className="label">{label}</span>
-      <div className="flex items-center gap-1.5">
-        <span className="h-3.5 w-3.5 shrink-0 rounded-sm border border-black/40" style={{ background: cur?.color || 'transparent' }} />
-        <select className="input py-1" value={value} onChange={(ev) => ev.target.value && onChange(ev.target.value)}>
-          {!cur && <option value="">— layer misti —</option>}
-          {layers.map((l) => <option key={l.id} value={l.id}>{l.name}{l.locked ? ' 🔒' : ''}{!l.visible ? ' (nascosto)' : ''}</option>)}
-        </select>
+    <div className="space-y-1.5 rounded-md border border-line bg-bg p-2 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-gray-400">{ls.length > 1 ? 'Layer (misti):' : 'Layer:'}</span>
+        {ls.map((l) => (
+          <span key={l.id} className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-gray-100">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: l.color }} />{l.name}
+          </span>
+        ))}
       </div>
+      <button onClick={onOpen} className="flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-600/80 px-2 py-1.5 font-semibold text-white hover:bg-blue-500">
+        <LayersIcon size={13} /> Sposta a layer…{count > 1 ? ` (${count})` : ''}
+      </button>
     </div>
+  )
+}
+
+function AssignLayerModal({ open, layers, counts, current, count, onClose, onPick, onNew }) {
+  return (
+    <Modal open={open} onClose={onClose} title={`Sposta ${count} entità a layer`}
+      footer={<Button onClick={onClose}>Annulla</Button>}>
+      <p className="mb-2 text-xs text-gray-400">Scegli il layer di destinazione: le entità prendono subito il colore del layer.</p>
+      <div className="max-h-80 space-y-1 overflow-y-auto">
+        {layers.map((l) => {
+          const isCur = current.size === 1 && current.has(l.id)
+          return (
+            <button key={l.id} onClick={() => onPick(l.id)} data-testid={`assign-${l.id}`}
+              className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition hover:border-blue-400 hover:bg-blue-500/10 ${isCur ? 'border-accent/60 bg-accent/10' : 'border-line'}`}>
+              <span className="h-4 w-4 shrink-0 rounded border border-black/40" style={{ background: l.color }} />
+              <span className="min-w-0 flex-1 truncate text-gray-100">{l.name}</span>
+              {l.locked && <span className="text-[10px] text-yellow-400">bloccato</span>}
+              {!l.visible && <span className="text-[10px] text-gray-500">nascosto</span>}
+              <span className="font-mono text-[10px] text-gray-500">{counts[l.id] || 0}</span>
+              {isCur && <Check size={14} className="text-accent" />}
+            </button>
+          )
+        })}
+      </div>
+      <button onClick={onNew} className="mt-2 flex w-full items-center gap-2 rounded-md border border-dashed border-accent/50 px-3 py-2 text-left text-sm text-accent hover:bg-accent/10">
+        <Plus size={14} /> Nuovo layer…
+      </button>
+    </Modal>
   )
 }

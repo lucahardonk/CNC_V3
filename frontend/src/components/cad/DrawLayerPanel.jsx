@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Eye, EyeOff, GripVertical, Lock, LockOpen, Plus, Trash2, CornerDownLeft } from 'lucide-react'
+import { Eye, EyeOff, GripVertical, Lock, LockOpen, Plus, Trash2, CornerDownLeft, Play, Layers as LayersIcon } from 'lucide-react'
 import Modal from '../common/Modal'
 import Button from '../common/Button'
 import Tooltip from '../common/Tooltip'
@@ -9,7 +9,7 @@ const DRAG_MIME = 'application/x-cnc-selection'
 
 // Pannello Layer di disegno (stile AutoCAD/Photoshop): visibilità, blocco, colore, layer corrente,
 // assegnazione della selezione (pulsante, drag & drop del badge selezione, menu tasto destro nel canvas).
-export default function DrawLayerPanel({ layers, activeId, setActive, counts, selectionCount, onToggleVisible, onToggleLock, onColor, onRename, onAdd, onDelete, onAssignSelection }) {
+export default function DrawLayerPanel({ layers, activeId, setActive, counts, selectionCount, onToggleVisible, onToggleLock, onColor, onRename, onAdd, onDelete, onAssignSelection, onOpenAssign, onGenerateLayer, gcodeLayerId }) {
   const [adding, setAdding] = useState(false)
   const [toDelete, setToDelete] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -32,6 +32,14 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
               className="rounded p-1 text-red-400 hover:bg-red-500/15 disabled:opacity-30"><Trash2 size={15} /></button>
           </Tooltip>
         </div>
+      </div>
+
+      <div className="px-2 pb-1.5">
+        <button onClick={onOpenAssign} disabled={!selectionCount}
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-blue-500/60 bg-blue-600/80 px-2 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:font-normal disabled:text-gray-500"
+          title={selectionCount ? `Sposta le ${selectionCount} entità selezionate su un altro layer` : 'Seleziona prima una o più entità nel canvas'}>
+          <LayersIcon size={13} /> {selectionCount ? `Sposta a layer… (${selectionCount})` : 'Sposta a layer… (nessuna selezione)'}
+        </button>
       </div>
 
       {selectionCount > 0 && (
@@ -74,6 +82,18 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
                 </span>
               )}
               <span className="font-mono text-[10px] text-gray-500">{counts[l.id] || 0}</span>
+              {onGenerateLayer && (() => {
+                const n = counts[l.id] || 0
+                const why = !l.visible ? 'Layer nascosto: mostralo per generare il G-code' : !n ? 'Layer vuoto' : `Genera G-code solo per «${l.name}» (${n} entità)`
+                return (
+                  <Tooltip text={why}>
+                    <button disabled={!l.visible || !n} onClick={(e) => { e.stopPropagation(); onGenerateLayer(l.id) }}
+                      className={`rounded p-0.5 transition disabled:cursor-not-allowed disabled:opacity-25 ${gcodeLayerId === l.id ? 'bg-accent/25 text-accent' : 'text-green-400 hover:bg-green-500/20 hover:text-green-300'}`}>
+                      <Play size={13} fill="currentColor" />
+                    </button>
+                  </Tooltip>
+                )
+              })()}
               {selectionCount > 0 && (
                 <IconBtn tip={`Sposta qui le ${selectionCount} entità selezionate`} onClick={() => onAssignSelection(l.id)} className="opacity-0 group-hover:opacity-100">
                   <CornerDownLeft size={13} />
@@ -83,7 +103,7 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
           )
         })}
       </div>
-      <p className="px-3 pb-2 text-[10px] leading-snug text-gray-500">Layer corrente (evidenziato) = dove finiscono le nuove entità. Tasto destro su un'entità → «Assegna a layer».</p>
+      <p className="px-3 pb-2 text-[10px] leading-snug text-gray-500">Layer corrente (evidenziato) = dove finiscono le nuove entità. Seleziona entità → «Sposta a layer…» (o tasto destro). ▶ = G-code solo di quel layer.</p>
 
       <NewLayerModal open={adding} layers={layers} selectionCount={selectionCount} onCancel={() => setAdding(false)}
         onCreate={(n, c) => { onAdd(n, c); setAdding(false) }} />

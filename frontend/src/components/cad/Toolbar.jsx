@@ -68,10 +68,8 @@ export const TOOL_GROUPS = [
   ] },
   { id: 'fillet', key: 'F', items: [T('fillet', CornerDownRight, 'Raccordo', 'Click prima linea, poi passa sulla seconda (anteprima) e click: arco tangente col raggio R.')] },
   { id: 'dimension', key: 'D', items: [T('dimension', I.dim, 'Quota', 'Linea → quota lineare, cerchio → diametro, arco → raggio, due linee → angolo, due punti → distanza.')] },
-  { id: 'measure', key: 'N', label: 'Misura', items: [
-    T('measure', Ruler, 'Misura entità', 'Click su linea, cerchio/arco, due linee o due punti: mostra le misure senza creare entità.'),
-    T('measure_dist', I.measureDist, 'Misura distanza', 'Click sul punto A, poi sul punto B: mostra distanza, ΔX, ΔY e angolo (snap sui punti).'),
-  ] },
+  { id: 'measure', key: 'N', items: [T('measure', Ruler, 'Misura entità', 'Click su linea, cerchio/arco, due linee o due punti: mostra le misure senza creare entità.')] },
+  { id: 'measure_dist', key: 'K', items: [T('measure_dist', I.measureDist, 'Misura distanza', 'Click sul punto A, poi sul punto B: mostra «Distanza: X.XX mm» sul canvas e nel pannello Proprietà (snap sui punti).')] },
   { id: 'bridge', key: 'B', items: [T('bridge', GitCommitHorizontal, 'Ponticello (tab)', 'Click vicino a un contorno per aggiungere un ponticello, oppure due click per un rettangolo libero.')] },
 ]
 

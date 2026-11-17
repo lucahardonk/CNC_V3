@@ -65,6 +65,16 @@ export const Dxf = {
   },
 }
 
+// G-code di un solo layer di disegno (non salvato): JSON con statistiche, oppure blob .nc
+export const Export = {
+  layerGcode: (layerId, body) => d(api.post(`/export/layer/${layerId}`, body)),
+  layerGcodeFile: async (layerId, body) => {
+    const r = await api.post(`/export/layer/${layerId}`, body, { params: { format: 'nc' }, responseType: 'blob' })
+    const m = /filename="?([^";]+)"?/.exec(r.headers['content-disposition'] || '')
+    return { blob: r.data, filename: m ? m[1] : 'layer.nc' }
+  },
+}
+
 export const exportUrl = '/api/export'
 export const importZip = (file) => {
   const fd = new FormData()

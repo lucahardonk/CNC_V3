@@ -39,7 +39,7 @@ const lineLen = (l) => Math.hypot(l.data.x2 - l.data.x1, l.data.y2 - l.data.y1)
 export default function CADCanvas({
   entities, onChange, selected, setSelected, tool, setTool, stock, ui, options, onContextMenu, notify,
   onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [], pickLine = null,
-  drawLayers = [], fitRequest = null,
+  drawLayers = [], fitRequest = null, onMeasure = null,
 }) {
   const wrap = useRef(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
@@ -61,6 +61,7 @@ export default function CADCanvas({
   const entMap = useMemo(() => new Map(entities.map((x) => [x.id, x])), [entities])
   const liveDim = (e) => (e.targetId && dimLiveData(e, entMap.get(e.targetId))) || e.data
   const [measure, setMeasure] = useState(null) // {first, title, rows, marks}
+  useEffect(() => { onMeasure?.(measure) }, [measure]) // eslint-disable-line react-hooks/exhaustive-deps
   const [pasting, setPasting] = useState(null) // { ents, base } durante Ctrl+V
   const [arrayCfg, setArrayCfg] = useState(null)
   const [hover, setHover] = useState(null)
@@ -305,7 +306,7 @@ export default function CADCanvas({
       return setMeasure({
         first: null, title: 'Distanza tra punti',
         rows: [['Distanza', `${fmt(dist(a, p), 3)} mm`], ['ΔX', `${fmt(p.x - a.x, 3)} mm`], ['ΔY', `${fmt(p.y - a.y, 3)} mm`], ['Angolo', `${fmt(angleOf(a, p))}°`]],
-        marks: { seg: [a, p] },
+        distance: dist(a, p), marks: { seg: [a, p], label: `Distanza: ${dist(a, p).toFixed(2)} mm` },
       })
     }
     setMeasure({ first: { kind: 'point', p }, title: 'Primo punto', rows: [['X', fmt(p.x, 3)], ['Y', fmt(p.y, 3)]], note: 'Click sul secondo punto', marks: { pts: [p] } })
@@ -464,8 +465,10 @@ export default function CADCanvas({
         if (!a) return setMeasure({ first: { kind: 'point', p }, title: 'Misura distanza', rows: [['A', `${fmt(p.x, 2)} ; ${fmt(p.y, 2)}`]], note: 'Click sul punto B', marks: { pts: [p] } })
         return setMeasure({
           first: null, title: 'Distanza A → B',
-          rows: [['Distanza', `${fmt(dist(a, p), 2)} mm`], ['ΔX', `${fmt(p.x - a.x, 2)} mm`], ['ΔY', `${fmt(p.y - a.y, 2)} mm`], ['Angolo', `${fmt(angleOf(a, p))}°`]],
-          note: 'Click per una nuova misura (punto A)', marks: { seg: [a, p] },
+          rows: [['Distanza', `${fmt(dist(a, p), 2)} mm`], ['ΔX', `${fmt(p.x - a.x, 2)} mm`], ['ΔY', `${fmt(p.y - a.y, 2)} mm`], ['Angolo', `${fmt(angleOf(a, p))}°`],
+            ['A', `${fmt(a.x, 2)} ; ${fmt(a.y, 2)}`], ['B', `${fmt(p.x, 2)} ; ${fmt(p.y, 2)}`]],
+          distance: dist(a, p),
+          note: 'Click per una nuova misura (punto A)', marks: { seg: [a, p], label: `Distanza: ${dist(a, p).toFixed(2)} mm` },
         })
       }
       case 'dimension': {
@@ -947,11 +950,16 @@ export default function CADCanvas({
     const isSel = !opts.ghost && selected.has(e.id)
     const dl = !opts.ghost && dlMap.get(layerOf(e))
     const lc = dl && dl.color && dl.color.toLowerCase() !== DEFAULT_LAYER_COLOR ? dl.color : null // colore del layer di disegno
-    const stroke = opts.color || (isSel ? COLORS.selected : e.type === 'bridge' ? COLORS.bridge : isDim(e) ? COLORS.dim
+    const geomEnt = !isDim(e) && !isConstraint(e) && e.type !== 'bridge'
+    // selezione: alone blu sotto + tratto nel colore del layer, così si vede sempre a quale layer appartiene
+    if (isSel && geomEnt && !opts.color && !opts.noHalo) {
+      return <g key={key}>{renderEntity(e, key + '_h', { ...opts, color: COLORS.selected, width: 6, opacity: 0.35, noHalo: true })}{renderEntity(e, key + '_m', { ...opts, noHalo: true })}</g>
+    }
+    const stroke = opts.color || (isSel ? (geomEnt && lc) || COLORS.selected : e.type === 'bridge' ? COLORS.bridge : isDim(e) ? COLORS.dim
       : hover === e.id ? COLORS.hover : lc || (e.is_construction ? COLORS.construction : COLORS.normal))
     const common = {
       stroke, strokeWidth: opts.width || (isSel ? 2.4 : 1.5), fill: 'none', strokeLinecap: 'round',
-      opacity: !opts.color && dl?.locked ? 0.55 : undefined,
+      opacity: opts.opacity ?? (!opts.color && dl?.locked ? 0.55 : undefined),
       strokeDasharray: opts.dash || (e.is_construction && !isDim(e) ? '6 4' : undefined),
     }
     switch (e.type) {
@@ -1112,7 +1120,7 @@ export default function CADCanvas({
         if (!a) return null
         const sa = toS(a), sb = toS(p)
         return <g pointerEvents="none"><line x1={sa.x} y1={sa.y} x2={sb.x} y2={sb.y} stroke={COLORS.measure} strokeDasharray="5 4" strokeWidth={1.5} />
-          {dimText((sa.x + sb.x) / 2, (sa.y + sb.y) / 2, Math.atan2(sb.y - sa.y, sb.x - sa.x) * 180 / Math.PI, `${fmt(dist(a, p))} mm`, COLORS.measure, '_mdt')}</g>
+          {dimText((sa.x + sb.x) / 2, (sa.y + sb.y) / 2, Math.atan2(sb.y - sa.y, sb.x - sa.x) * 180 / Math.PI, `Distanza: ${dist(a, p).toFixed(2)} mm`, COLORS.measure, '_mdt')}</g>
       }
       case 'fillet': {
         if (!pick) return null
@@ -1133,7 +1141,8 @@ export default function CADCanvas({
     return (
       <g>
         {(m.ents || []).map((e, i) => renderEntity(e, '_ms' + i, { color: COLORS.measure, width: 2.5 }))}
-        {m.seg && (() => { const a = toS(m.seg[0]), b = toS(m.seg[1]); return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COLORS.measure} strokeDasharray="5 4" strokeWidth={1.5} /> })()}
+        {m.seg && (() => { const a = toS(m.seg[0]), b = toS(m.seg[1]); return <g pointerEvents="none"><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COLORS.measure} strokeDasharray="5 4" strokeWidth={1.5} />
+          {m.label && dimText((a.x + b.x) / 2, (a.y + b.y) / 2, Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI, m.label, COLORS.measure, '_mdl')}</g> })()}
         {[...(m.pts || []), ...(m.seg || [])].map((p, i) => { const s = toS(p); return <circle key={'mp' + i} cx={s.x} cy={s.y} r={3.5} fill={COLORS.measure} /> })}
         {m.arc && <path d={arcPath(m.arc)} stroke={COLORS.measure} fill="none" strokeWidth={1.5} />}
       </g>

@@ -88,7 +88,7 @@ Il pannello **Layer** a destra organizza le entità del layer di lavorazione cor
   - **Cerchio:** diametro, raggio e circonferenza.
   - **Arco:** raggio, angolo iniziale e finale, ampiezza, lunghezza dell'arco e corda.
   - **Selezione multipla:** numero di entità e lunghezza totale delle linee.
-- **Misura distanza** (toolbar, gruppo misura, tasto `N`): click sul punto A, poi sul punto B → distanza, ΔX, ΔY e angolo, con snap sui punti.
+- **Misura distanza** (toolbar, pulsante dedicato, tasto `K`): click sul punto A, poi sul punto B → «Distanza: X.XX mm» sul canvas e nel pannello, con, ΔX, ΔY e angolo, con snap sui punti.
 
 ## Sviluppo locale (senza Docker)
 
