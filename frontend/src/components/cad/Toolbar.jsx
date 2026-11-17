@@ -23,6 +23,7 @@ const I = {
   spline: ico(<><path d="M3 17c3-8 6-8 9-4s6 4 9-4" /><Dot x={3} y={17} /><Dot x={12} y={13} /><Dot x={21} y={9} /></>),
   mirrorLine: ico(<><path d="M12 3v18" /><path d="M8 7 4 12l4 5" /><path d="m16 7 4 5-4 5" /></>),
   point: ico(<><circle cx="12" cy="12" r="3.5" /><path d="M12 4v4M12 16v4M4 12h4M16 12h4" /></>),
+  measureDist: ico(<><path d="M5 19 19 5" strokeDasharray="3 2" /><Dot x={5} y={19} /><Dot x={19} y={5} /><path d="M3 21l4-4M17 3l4 4" /></>),
   dim: ico(<><path d="M4 7v10M20 7v10M4 12h16" /><path d="m7 9-3 3 3 3M17 9l3 3-3 3" /></>),
 }
 
@@ -67,7 +68,10 @@ export const TOOL_GROUPS = [
   ] },
   { id: 'fillet', key: 'F', items: [T('fillet', CornerDownRight, 'Raccordo', 'Click prima linea, poi passa sulla seconda (anteprima) e click: arco tangente col raggio R.')] },
   { id: 'dimension', key: 'D', items: [T('dimension', I.dim, 'Quota', 'Linea → quota lineare, cerchio → diametro, arco → raggio, due linee → angolo, due punti → distanza.')] },
-  { id: 'measure', key: 'N', items: [T('measure', Ruler, 'Misura', 'Click su linea, cerchio/arco, due linee o due punti: mostra le misure senza creare entità.')] },
+  { id: 'measure', key: 'N', label: 'Misura', items: [
+    T('measure', Ruler, 'Misura entità', 'Click su linea, cerchio/arco, due linee o due punti: mostra le misure senza creare entità.'),
+    T('measure_dist', I.measureDist, 'Misura distanza', 'Click sul punto A, poi sul punto B: mostra distanza, ΔX, ΔY e angolo (snap sui punti).'),
+  ] },
   { id: 'bridge', key: 'B', items: [T('bridge', GitCommitHorizontal, 'Ponticello (tab)', 'Click vicino a un contorno per aggiungere un ponticello, oppure due click per un rettangolo libero.')] },
 ]
 

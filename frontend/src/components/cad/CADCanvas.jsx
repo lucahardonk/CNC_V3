@@ -10,6 +10,7 @@ import {
   isOnLine, measureDim, namedPoints, onLine, pointKind, refilletArc, setPt, solveCommit, syncRefDims,
 } from './constraints'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
+import { DEFAULT_LAYER_COLOR, layerOf } from './drawLayers'
 
 const COLORS = { normal: '#e5e7eb', selected: '#3b82f6', hover: '#93c5fd', construction: '#6b7280', bridge: '#f97316', dim: '#facc15', preview: '#22c55e', measure: '#22d3ee', point: '#d946ef', midCtr: '#22d3ee' }
 // Colore dei key-point/snap per categoria: vertice, punto medio, centro, entità Punto
@@ -38,6 +39,7 @@ const lineLen = (l) => Math.hypot(l.data.x2 - l.data.x1, l.data.y2 - l.data.y1)
 export default function CADCanvas({
   entities, onChange, selected, setSelected, tool, setTool, stock, ui, options, onContextMenu, notify,
   onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [], pickLine = null,
+  drawLayers = [], fitRequest = null,
 }) {
   const wrap = useRef(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
@@ -49,7 +51,12 @@ export default function CADCanvas({
   const [dimPick, setDimPick] = useState(null) // quota: {e, click, link}
   const [editingDim, setEditingDim] = useState(null) // {id, value, screenPos}
   const [dimRef, setDimRef] = useState(null) // punto con nome del primo click della quota punto-punto
-  const geo = useMemo(() => entities.filter((x) => !isConstraint(x)), [entities])
+  // layer di disegno: le entità su layer nascosti non sono disegnate né interattive, quelle su layer bloccati
+  // sono visibili (e agganciabili) ma non selezionabili/modificabili
+  const dlMap = useMemo(() => new Map(drawLayers.map((l) => [l.id, l])), [drawLayers])
+  const hiddenIds = useMemo(() => new Set(entities.filter((x) => !isConstraint(x) && dlMap.get(layerOf(x))?.visible === false).map((x) => x.id)), [entities, dlMap])
+  const lockedIds = useMemo(() => new Set(entities.filter((x) => !isConstraint(x) && dlMap.get(layerOf(x))?.locked).map((x) => x.id)), [entities, dlMap])
+  const geo = useMemo(() => entities.filter((x) => !isConstraint(x) && !hiddenIds.has(x.id)), [entities, hiddenIds])
   const nodeList = useMemo(() => (tool === 'trim' ? computeNodes(geo) : []), [geo, tool])
   const entMap = useMemo(() => new Map(entities.map((x) => [x.id, x])), [entities])
   const liveDim = (e) => (e.targetId && dimLiveData(e, entMap.get(e.targetId))) || e.data
@@ -71,6 +78,15 @@ export default function CADCanvas({
     setView({ s, tx: size.w / 2, ty: size.h / 2 })
   }, [size.w, size.h, stock.x, stock.y])
   useEffect(() => { if (!view && size.w > 10) fit() }, [size, view, fit])
+  // adatta la vista a un riquadro (es. dopo l'import DXF): include sempre lo stock
+  useEffect(() => {
+    const b = fitRequest?.bbox
+    if (!b || size.w < 10) return
+    const minX = Math.min(b.minX, -stock.x / 2), maxX = Math.max(b.maxX, stock.x / 2)
+    const minY = Math.min(b.minY, -stock.y / 2), maxY = Math.max(b.maxY, stock.y / 2)
+    const s = Math.min(size.w / ((maxX - minX) * 1.15 || 1), size.h / ((maxY - minY) * 1.15 || 1))
+    setView({ s, tx: size.w / 2 - ((minX + maxX) / 2) * s, ty: size.h / 2 + ((minY + maxY) / 2) * s })
+  }, [fitRequest?.n]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const v = view || { s: 1, tx: 0, ty: 0 }
   const toS = (p) => ({ x: p.x * v.s + v.tx, y: -p.y * v.s + v.ty })
@@ -118,7 +134,7 @@ export default function CADCanvas({
   const pointAt = (w) => {
     let best = null
     for (const e of geo) {
-      if (isDim(e) || e.type === 'bridge') continue
+      if (isDim(e) || e.type === 'bridge' || lockedIds.has(e.id)) continue
       for (const q of namedPoints(e)) {
         const d = dist(q, w)
         if (d > tol) continue
@@ -148,8 +164,9 @@ export default function CADCanvas({
 
   const hit = (w, filter = () => true) => {
     let best = null
+    const allowLocked = tool === 'measure' || tool === 'measure_dist' || tool === 'dimension'
     for (const e of geo) {
-      if (!filter(e)) continue
+      if (!filter(e) || (!allowLocked && lockedIds.has(e.id))) continue
       const c = closestOnEntity(e, w)
       if (c && c.d < tol && (!best || c.d < best.c.d)) best = { e, c }
     }
@@ -442,6 +459,15 @@ export default function CADCanvas({
       }
       case 'spline': return setPts([...pts, p])
       case 'measure': return handleMeasure(p, raw)
+      case 'measure_dist': {
+        const a = measure?.first?.kind === 'point' ? measure.first.p : null
+        if (!a) return setMeasure({ first: { kind: 'point', p }, title: 'Misura distanza', rows: [['A', `${fmt(p.x, 2)} ; ${fmt(p.y, 2)}`]], note: 'Click sul punto B', marks: { pts: [p] } })
+        return setMeasure({
+          first: null, title: 'Distanza A → B',
+          rows: [['Distanza', `${fmt(dist(a, p), 2)} mm`], ['ΔX', `${fmt(p.x - a.x, 2)} mm`], ['ΔY', `${fmt(p.y - a.y, 2)} mm`], ['Angolo', `${fmt(angleOf(a, p))}°`]],
+          note: 'Click per una nuova misura (punto A)', marks: { seg: [a, p] },
+        })
+      }
       case 'dimension': {
         if (pts.length) {
           // quota tra due punti: se entrambi sono punti di figure (o l'origine) diventa guida e li posiziona
@@ -563,25 +589,26 @@ export default function CADCanvas({
     }
     if (tool === 'select') {
       // 1) punto chiave: trascina il punto (stira l'estremo o sposta la figura), click = seleziona
-      const pt = !e.shiftKey && pointAt(raw)
+      const multi = e.shiftKey || e.ctrlKey || e.metaKey // Shift o Ctrl = aggiungi/rimuovi dalla selezione
+      const pt = !multi && pointAt(raw)
       if (pt) return setDrag({ type: 'point', id: pt.id, ref: pt.ref, grab: { x: pt.x, y: pt.y }, cur: { x: pt.x, y: pt.y }, target: null, sx, sy, moved: false, con: constraintAt(raw)?.id || null })
       const con = constraintAt(raw)
       if (con) {
-        const sel = e.shiftKey ? new Set(selected) : new Set()
+        const sel = multi ? new Set(selected) : new Set()
         sel.has(con.id) ? sel.delete(con.id) : sel.add(con.id)
         return setSelected(sel)
       }
       // l'etichetta di una quota è cliccabile quanto la sua linea
-      const lab = entities.filter(isDim).map((x) => ({ e: x, d: dimLabelDist(x, sx, sy) })).filter((q) => q.d < 16).sort((a, b) => a.d - b.d)[0]
+      const lab = entities.filter((x) => isDim(x) && !hiddenIds.has(x.id) && !lockedIds.has(x.id)).map((x) => ({ e: x, d: dimLabelDist(x, sx, sy) })).filter((q) => q.d < 16).sort((a, b) => a.d - b.d)[0]
       // etichetta di quota: trascinandola si cambia l'offset RELATIVO al punto medio della quota
-      if (lab && !e.shiftKey) {
+      if (lab && !multi) {
         setSelected(new Set([lab.e.id]))
         return setDrag({ type: 'label', id: lab.e.id, start: raw, cur: raw, sx, sy, moved: false, editDim: isLinkedDim(lab.e) && lab.e.driving !== false ? lab.e : null })
       }
       const h = lab ? { e: lab.e } : hit(raw)
       if (h) {
         let sel = selected
-        if (e.shiftKey) {
+        if (multi) {
           sel = new Set(selected)
           sel.has(h.e.id) ? sel.delete(h.e.id) : sel.add(h.e.id)
           setSelected(sel)
@@ -594,7 +621,7 @@ export default function CADCanvas({
         const startRef = sr && sel.has(sr.id) ? sr : null
         return setDrag({ type: 'move', start: p, cur: p, ids: sel, editDim, sx, sy, startRef, target: null })
       }
-      if (!e.shiftKey) setSelected(new Set())
+      if (!multi) setSelected(new Set())
       return setDrag({ type: 'box', a: raw, b: raw })
     }
     handleToolClick(p, raw, e, sn)
@@ -656,6 +683,7 @@ export default function CADCanvas({
       const minY = Math.min(drag.a.y, drag.b.y), maxY = Math.max(drag.a.y, drag.b.y)
       if (maxX - minX > tol || maxY - minY > tol) {
         const ids = entities.filter((x) => {
+          if (hiddenIds.has(x.id) || lockedIds.has(x.id)) return false
           if (isConstraint(x)) { const c = constraintPos(x, entMap); return !!c && c.x >= minX && c.x <= maxX && c.y >= minY && c.y <= maxY }
           const b = bbox(x); return b.minX >= minX && b.maxX <= maxX && b.minY >= minY && b.maxY <= maxY }).map((x) => x.id)
         setSelected(new Set([...selected, ...ids]))
@@ -817,7 +845,7 @@ export default function CADCanvas({
     if (h) {
       if (!selected.has(h.e.id)) setSelected(new Set([h.e.id]))
       onContextMenu?.(h.e, { x: e.clientX, y: e.clientY })
-    }
+    } else if (selected.size) onContextMenu?.(null, { x: e.clientX, y: e.clientY }) // menu sulla selezione corrente
   }
 
   // ---------------------------------------------------------------- tastiera
@@ -846,7 +874,7 @@ export default function CADCanvas({
         return setPasting(CLIPBOARD)
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); return onDuplicate() }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); return setSelected(new Set(geo.map((x) => x.id))) }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); return setSelected(new Set(geo.filter((x) => !lockedIds.has(x.id)).map((x) => x.id))) }
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'Enter' && tool === 'spline' && pts.length) { e.preventDefault(); return finishSpline(pts) }
       if (e.key === 'Escape') {
@@ -917,10 +945,13 @@ export default function CADCanvas({
     const ref = e.driving === false
     const lbl = (t) => (ref ? `(${t})` : t)
     const isSel = !opts.ghost && selected.has(e.id)
+    const dl = !opts.ghost && dlMap.get(layerOf(e))
+    const lc = dl && dl.color && dl.color.toLowerCase() !== DEFAULT_LAYER_COLOR ? dl.color : null // colore del layer di disegno
     const stroke = opts.color || (isSel ? COLORS.selected : e.type === 'bridge' ? COLORS.bridge : isDim(e) ? COLORS.dim
-      : e.is_construction ? COLORS.construction : hover === e.id ? COLORS.hover : COLORS.normal)
+      : hover === e.id ? COLORS.hover : lc || (e.is_construction ? COLORS.construction : COLORS.normal))
     const common = {
-      stroke, strokeWidth: opts.width || (isSel ? 2 : 1.5), fill: 'none', strokeLinecap: 'round',
+      stroke, strokeWidth: opts.width || (isSel ? 2.4 : 1.5), fill: 'none', strokeLinecap: 'round',
+      opacity: !opts.color && dl?.locked ? 0.55 : undefined,
       strokeDasharray: opts.dash || (e.is_construction && !isDim(e) ? '6 4' : undefined),
     }
     switch (e.type) {
@@ -1076,6 +1107,13 @@ export default function CADCanvas({
         }
         return null
       }
+      case 'measure_dist': {
+        const a = measure?.first?.kind === 'point' ? measure.first.p : null
+        if (!a) return null
+        const sa = toS(a), sb = toS(p)
+        return <g pointerEvents="none"><line x1={sa.x} y1={sa.y} x2={sb.x} y2={sb.y} stroke={COLORS.measure} strokeDasharray="5 4" strokeWidth={1.5} />
+          {dimText((sa.x + sb.x) / 2, (sa.y + sb.y) / 2, Math.atan2(sb.y - sa.y, sb.x - sa.x) * 180 / Math.PI, `${fmt(dist(a, p))} mm`, COLORS.measure, '_mdt')}</g>
+      }
       case 'fillet': {
         if (!pick) return null
         const l1 = entities.find((x) => x.id === pick.id)
@@ -1102,7 +1140,7 @@ export default function CADCanvas({
     )
   }
 
-  const shown = dragPreview ? entities.map((x) => dragPreview.get(x.id) || x) : entities
+  const shown = (dragPreview ? entities.map((x) => dragPreview.get(x.id) || x) : entities).filter((x) => !hiddenIds.has(x.id))
   const shownMap = dragPreview || entMap
   const nodes = tool === 'trim' ? nodeList : []
   const origin = toS({ x: 0, y: 0 })
@@ -1110,7 +1148,7 @@ export default function CADCanvas({
   const hintText = {
     point: 'Click = punto libero · su una linea = punto vincolato sulla linea · su un key-point (pallino ciano = medio/centro) = punto coincidente',
     select: drag?.type === 'label' ? 'Rilascia per fissare la posizione dell\'etichetta (relativa al punto medio della quota)' : drag?.type === 'point' ? (drag.target ? 'Rilascia per creare il vincolo di coincidenza' : 'Trascina su un altro punto o sull\'origine per vincolarlo (Alt = senza snap)')
-      : 'Click/drag per selezionare · trascina un punto chiave per spostare/stirare e vincolare · quadratino verde = vincolo (Canc elimina) · H = adatta',
+      : 'Click/drag per selezionare (Ctrl/Shift+click = aggiungi/rimuovi, Esc = deseleziona) · trascina un punto chiave per spostare/stirare e vincolare · quadratino verde = vincolo (Canc elimina) · H = adatta',
     line: pts.length ? 'Click punto finale (Shift = orto, Esc = fine)' : 'Click punto iniziale',
     line_midpoint: pts.length ? 'Click estremo: la linea si estende simmetrica' : 'Click punto medio della linea',
     construction: pts.length ? 'Click punto finale' : 'Click punto iniziale',
@@ -1134,6 +1172,7 @@ export default function CADCanvas({
     fillet: pick ? 'Passa sulla seconda linea (anteprima) e click dal lato da mantenere' : `Click prima linea (R=${options.filletRadius} mm)`,
     dimension: pts.length ? 'Click secondo punto' : dimPick ? 'Click stessa linea = quota (offset 5 mm) · altra linea = angolo · vuoto = posiziona quota'
       : 'Click linea / cerchio (Ø) / arco (R), oppure due punti liberi',
+    measure_dist: measure?.first ? 'Click sul punto B (snap sui punti attivo, Alt = libero)' : 'Click sul punto A · poi punto B: mostra la distanza · Esc azzera',
     measure: measure?.note || 'Click su linea, cerchio/arco, due linee (angolo) o due punti (distanza) · Esc azzera',
     bridge: pts.length ? 'Click angolo opposto' : 'Click su un contorno (o due click per rettangolo libero)',
   }[tool]
@@ -1171,7 +1210,12 @@ export default function CADCanvas({
         {measureMarks()}
         {preview()}
         {/* key-point: vertici grigi, punti medi e centri ciano (vincolabili come i vertici) */}
-        {tool !== 'trim' && shown.filter((e) => isGeo(e) && e.type !== 'point').flatMap((e) => kpWithKind(e).map((k, i) => { const q = toS(k); return <circle key={`kp${e.id}_${i}`} cx={q.x} cy={q.y} r={k.kind === 'vtx' ? 2.4 : 2.2} fill={selected.has(e.id) ? COLORS.selected : KP_COLOR[k.kind]} stroke="#121212" strokeWidth={1} pointerEvents="none" /> }))}
+        {tool !== 'trim' && shown.filter((e) => isGeo(e) && e.type !== 'point').flatMap((e) => kpWithKind(e).map((k, i) => {
+          const q = toS(k)
+          // entità selezionata: maniglie quadrate sugli estremi/vertici
+          if (selected.has(e.id) && k.kind === 'vtx') return <rect key={`kp${e.id}_${i}`} x={q.x - 3.5} y={q.y - 3.5} width={7} height={7} fill="#121212" stroke={COLORS.selected} strokeWidth={1.5} pointerEvents="none" />
+          return <circle key={`kp${e.id}_${i}`} cx={q.x} cy={q.y} r={k.kind === 'vtx' ? 2.4 : 2.2} fill={selected.has(e.id) ? COLORS.selected : KP_COLOR[k.kind]} stroke="#121212" strokeWidth={1} pointerEvents="none" />
+        }))}
         {/* vincoli di coincidenza: quadratino verde (click per selezionare, Canc per eliminare) */}
         {shown.filter(isConstraint).map((c) => {
           const q = constraintPos(c, shownMap)
