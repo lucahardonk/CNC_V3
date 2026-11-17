@@ -365,7 +365,44 @@ def _split_by_bridges(a, b, bridges, z_cut, z_tab):
     return out
 
 
-def generate_gcode(entities: list[dict[str, Any]], p: Params) -> Result:
+# --------------------------------------------------------------------------- layer di disegno
+def _layer_sources(entities: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Geometria sorgente (contorni) raggruppata per layer di disegno (chiave `dlayer`, default "0")."""
+    by: dict[str, list] = {}
+    for e in entities:
+        if e.get("is_construction") or e.get("type") in IGNORED_TYPES or e.get("type") == "bridge":
+            continue
+        kind, g = entity_to_geom(e)
+        if g is None or g.is_empty:
+            continue
+        by.setdefault(str(e.get("dlayer") or "0"), []).append(g.boundary if kind == "area" else g)
+    return {k: unary_union(v) for k, v in by.items()}
+
+
+def _path_layer(path: "Path", sources: dict[str, Any]) -> str:
+    """Layer di disegno da cui deriva un percorso: quello con la geometria sorgente più vicina
+    (i profili offset distano ~raggio fresa dalla loro sorgente)."""
+    if len(sources) == 1:
+        return next(iter(sources))
+    pts = path.points
+    step = max(1, len(pts) // 10)
+    sample = [Point(q) for q in pts[::step]][:12]
+    return min(sources, key=lambda k: sum(sources[k].distance(q) for q in sample))
+
+
+def _layer_comment(lid: str, info: dict[str, dict]) -> str:
+    meta = info.get(lid) or {}
+    color = str(meta.get("color") or "")
+    if not (color.startswith("#") and len(color) in (4, 7)):
+        color = "-"
+    name = str(meta.get("name") or lid).replace("\n", " ").strip()
+    return f"; DLAYER {lid} {color} {name}"
+
+
+def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[str, dict] | None = None) -> Result:
+    """layer_info (opzionale): {id_layer_disegno: {name, color}}. Se presente, ogni percorso viene
+    preceduto da un commento `; DLAYER <id> <colore> <nome>` (usato dal viewer 3D per colorare i
+    percorsi per layer). Le entità indicano il loro layer con la chiave `dlayer`."""
     if p.tool_diameter <= 0:
         raise ValueError("Diametro utensile non valido")
     if p.depth_per_pass <= 0:
@@ -399,6 +436,11 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params) -> Result:
         warnings.append("I ponticelli sono ignorati nelle pocket.")
         bridges = None
 
+    tags = None
+    if layer_info is not None:
+        sources = _layer_sources(entities)
+        tags = [_path_layer(pa, sources) if sources else "0" for pa in paths]
+
     op_names = {"profile_on": "Profilo sul centro", "profile_inside": "Profilo interno",
                 "profile_outside": "Profilo esterno", "pocket": f"Pocket ({p.pocket_direction})"}
     out = [
@@ -422,10 +464,14 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params) -> Result:
     curz = p.safe_height
     for li, zl in enumerate(levels, 1):
         out.append(f"; --- Pass {li}/{len(levels)} Z={_f(zl)} ---")
-        for path in paths:
+        cur_tag = None
+        for pi, path in enumerate(paths):
             pts = path.points
             if len(pts) < 2:
                 continue
+            if tags is not None and tags[pi] != cur_tag:
+                cur_tag = tags[pi]
+                out.append(_layer_comment(cur_tag, layer_info))
             start = pts[0]
             out.append(f"G0 Z{_f(p.safe_height)}")
             rapid_len += abs(p.safe_height - curz)

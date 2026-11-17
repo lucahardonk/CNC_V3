@@ -113,9 +113,23 @@ async def upsert_entities(layer_id: str, body: EntityBatch, db: AsyncSession = D
     return [EntityResponse.model_validate(e) for e in l.entities]
 
 
-@router.post("/layers/{layer_id}/generate", response_model=GenerateResponse)
-async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depends(get_db)):
-    l = await _layer(db, layer_id)
+DEFAULT_DRAW_LAYER = {"id": "0", "name": "Layer 0", "color": "#e5e7eb", "visible": True, "locked": False}
+
+
+def draw_layers_of(l: Layer) -> list[dict]:
+    """Layer di disegno del layer di lavorazione (Layer 0 sempre presente)."""
+    dls = [dict(d) for d in (l.draw_layers or []) if d.get("id")]
+    if not any(d["id"] == "0" for d in dls):
+        dls.insert(0, dict(DEFAULT_DRAW_LAYER))
+    return dls
+
+
+async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
+    """Calcola il G-code di un layer di lavorazione con i parametri richiesti.
+
+    body.draw_layer_id = None → tutte le entità sui layer di disegno visibili;
+    altrimenti solo quelle del layer di disegno indicato (che deve essere visibile).
+    Ritorna (result, params, tool_id, operation, scope) senza salvare nulla."""
     project = await db.get(Project, l.project_id)
     tools = read_json("tools.json")
     materials = read_json("materials.json")
@@ -148,24 +162,55 @@ async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depe
         bridge_height=float(body.bridge_height if body.bridge_height is not None else cutting.get("bridge_height", 1.5)),
         stock_z=project.stock_z, pocket_direction=body.pocket_direction,
     )
-    # le entità sui layer di disegno nascosti non vengono lavorate (come i layer spenti in AutoCAD)
-    hidden = {dl.get("id") for dl in (l.draw_layers or []) if dl.get("visible") is False}
+    dls = draw_layers_of(l)
+    info = {d["id"]: {"name": d.get("name"), "color": d.get("color")} for d in dls}
+    hidden = {d["id"] for d in dls if d.get("visible") is False}
+    only = body.draw_layer_id
+    scope = None
+    if only is not None:
+        scope = next((d for d in dls if d["id"] == only), None)
+        if scope is None:
+            raise HTTPException(404, "Layer di disegno non trovato")
+        if only in hidden:
+            raise HTTPException(400, f"Il layer \"{scope.get('name')}\" è nascosto: rendilo visibile per generare il G-code")
     entities, n_hidden = [], 0
     for e in l.entities:
-        if ((e.data or {}).get("_meta") or {}).get("dlayer", "0") in hidden:
+        dl = str(((e.data or {}).get("_meta") or {}).get("dlayer") or "0")
+        if dl not in info:  # layer di disegno eliminato → Layer 0
+            dl = "0"
+        if only is not None and dl != only:
+            continue
+        # le entità sui layer di disegno nascosti non vengono lavorate (come i layer spenti in AutoCAD)
+        if dl in hidden:
             n_hidden += 1
             continue
-        entities.append({"type": e.type, "data": e.data, "is_construction": e.is_construction})
+        entities.append({"type": e.type, "data": e.data, "is_construction": e.is_construction, "dlayer": dl})
+    if only is not None and not entities:
+        raise HTTPException(400, f"Il layer \"{scope.get('name')}\" non contiene entità")
     try:
-        result = generate_gcode(entities, params)
+        result = generate_gcode(entities, params, layer_info=info)
         if n_hidden:
             result.warnings.append(f"{n_hidden} entità su layer di disegno nascosti escluse dal percorso")
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        msg = str(exc)
+        if scope is not None:
+            msg = f"Layer \"{scope.get('name')}\": {msg}"
+        raise HTTPException(400, msg) from exc
     except Exception as exc:  # noqa: BLE001
         log.exception("Errore generazione G-code")
         raise HTTPException(500, f"Errore generazione G-code: {exc}") from exc
+    if scope is not None:
+        result.gcode = result.gcode.replace("; CNC V3 - Generated G-code",
+                                            f"; CNC V3 - Generated G-code\n; Draw layer: {scope.get('name')} (solo questo layer)", 1)
+        result.line_count += 1
+    return result, params, tool_id, operation, scope
 
+
+@router.post("/layers/{layer_id}/generate", response_model=GenerateResponse)
+async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depends(get_db)):
+    """Genera e SALVA il G-code del layer (tutto o un solo layer di disegno con draw_layer_id)."""
+    l = await _layer(db, layer_id)
+    result, params, tool_id, operation, scope = await build_layer_gcode(db, l, body)
     l.gcode = result.gcode
     l.tool_id = tool_id
     l.operation = operation
@@ -173,12 +218,15 @@ async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depe
                 "feed_rate": params.feed_rate, "plunge_rate": params.plunge_rate,
                 "spindle_rpm": params.spindle_rpm, "depth_per_pass": params.depth_per_pass,
                 "step_over": params.step_over, "safe_height": params.safe_height,
-                "bridge_height": params.bridge_height}
+                "bridge_height": params.bridge_height,
+                "draw_layer_id": scope["id"] if scope else None,
+                "draw_layer_name": scope.get("name") if scope else None}
     l.is_complete = False
     await _touch_project(db, l.project_id)
     await db.commit()
     await db.refresh(l)
-    log.info("G-code generato per layer '%s': %d linee, %.1f mm taglio", l.name, result.line_count, result.cut_length_mm)
+    log.info("G-code generato per layer '%s'%s: %d linee, %.1f mm taglio", l.name,
+             f" (solo '{scope.get('name')}')" if scope else "", result.line_count, result.cut_length_mm)
     return GenerateResponse(layer=layer_to_response(l), line_count=result.line_count,
                             path_length_mm=result.path_length_mm, cut_length_mm=result.cut_length_mm,
                             estimated_time_min=result.estimated_time_min, warnings=result.warnings)

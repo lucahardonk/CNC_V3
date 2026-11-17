@@ -111,6 +111,8 @@ class GenerateRequest(BaseModel):
     safe_height: Optional[float] = None
     bridge_height: Optional[float] = None
     pocket_direction: Literal["horizontal", "vertical", "contour"] = "horizontal"
+    # None = tutti i layer di disegno visibili; altrimenti solo le entità di quel layer di disegno
+    draw_layer_id: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):

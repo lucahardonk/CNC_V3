@@ -9,11 +9,15 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import DATA_DIR, JSON_FILES
-from database import DB_PATH, engine
+from database import DB_PATH, engine, get_db
+from models import Layer
+from routers.layers import build_layer_gcode
+from schemas import GenerateRequest
 
 router = APIRouter(tags=["export"])
 log = logging.getLogger("cnc.export")
@@ -100,3 +104,23 @@ async def import_all(file: UploadFile = File(...)):
         restored.append("projects.db")
     log.info("Import completato: %s", restored)
     return {"ok": True, "restored": restored}
+
+
+@router.post("/export/layer/{layer_id}")
+async def export_layer_gcode(layer_id: str, body: GenerateRequest, fmt: str = Query("json", alias="format", pattern="^(json|nc)$"),
+                             db: AsyncSession = Depends(get_db)):
+    """G-code di un layer di lavorazione con i parametri ricevuti, SENZA salvarlo.
+
+    body.draw_layer_id: solo le entità visibili di quel layer di disegno (None = tutti i layer visibili).
+    ?format=nc → file .nc in download; default JSON con G-code e statistiche."""
+    l = await db.get(Layer, layer_id)
+    if not l:
+        raise HTTPException(404, "Layer non trovato")
+    result, params, tool_id, operation, scope = await build_layer_gcode(db, l, body)
+    if fmt == "nc":
+        name = _safe(l.name + (f"_{scope.get('name')}" if scope else "")).replace(" ", "_")
+        return PlainTextResponse(result.gcode, headers={"Content-Disposition": f'attachment; filename="{name}.nc"'})
+    return {"layer_id": l.id, "draw_layer": scope, "operation": operation, "tool_id": tool_id,
+            "gcode": result.gcode, "line_count": result.line_count, "path_length_mm": result.path_length_mm,
+            "cut_length_mm": result.cut_length_mm, "estimated_time_min": result.estimated_time_min,
+            "warnings": result.warnings}
