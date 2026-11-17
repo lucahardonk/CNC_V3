@@ -391,7 +391,7 @@ export function constraintPos(c, byId) { return refPt(byId, c.data.a) }
 // ---------------------------------------------------------------- persistenza
 // Il backend salva solo type/data/is_construction: i campi extra viaggiano in data._meta
 // lo = offset etichetta della quota RELATIVO al suo punto medio (mm, {dx, dy})
-const META_KEYS = ['targetId', 'param', 'side', 'driving', 'value', 'pa', 'pb', 'la', 'lb', 'kind', 'lo']
+const META_KEYS = ['targetId', 'param', 'side', 'driving', 'value', 'pa', 'pb', 'la', 'lb', 'kind', 'lo', 'dlayer']
 export function packEnt(e) {
   const meta = {}
   for (const k of META_KEYS) if (e[k] !== undefined) meta[k] = e[k]

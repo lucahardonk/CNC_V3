@@ -57,6 +57,14 @@ export const Grbl = {
   sendLayer: (layer_id) => d(api.post('/grbl/send', { layer_id })),
 }
 
+export const Dxf = {
+  parse: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return d(api.post('/dxf/parse', fd))
+  },
+}
+
 export const exportUrl = '/api/export'
 export const importZip = (file) => {
   const fd = new FormData()

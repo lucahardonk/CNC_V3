@@ -368,21 +368,21 @@ export function translate(e, dx, dy) {
 }
 
 export function explodeRect(e) {
-  return rectLines(e.data).map((s) => ({ id: uid(), type: 'line', is_construction: e.is_construction, data: { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y } }))
+  return rectLines(e.data).map((s) => ({ id: uid(), type: 'line', is_construction: e.is_construction, ...(e.dlayer ? { dlayer: e.dlayer } : {}), data: { x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y } }))
 }
 
 // Asola → 2 linee + 2 archi (geometria esatta)
 export function explodeSlot(e) {
   const s = slotParts(e.data)
   return [
-    ...s.segs.map((g) => ({ id: uid(), type: 'line', is_construction: e.is_construction, data: { x1: round3(g.a.x), y1: round3(g.a.y), x2: round3(g.b.x), y2: round3(g.b.y) } })),
-    ...s.arcs.map((a) => ({ id: uid(), type: 'arc', is_construction: e.is_construction, data: { cx: round3(a.c.x), cy: round3(a.c.y), r: round3(a.r), start: round3(a.start), end: round3(a.end) } })),
+    ...s.segs.map((g) => ({ id: uid(), type: 'line', is_construction: e.is_construction, ...(e.dlayer ? { dlayer: e.dlayer } : {}), data: { x1: round3(g.a.x), y1: round3(g.a.y), x2: round3(g.b.x), y2: round3(g.b.y) } })),
+    ...s.arcs.map((a) => ({ id: uid(), type: 'arc', is_construction: e.is_construction, ...(e.dlayer ? { dlayer: e.dlayer } : {}), data: { cx: round3(a.c.x), cy: round3(a.c.y), r: round3(a.r), start: round3(a.start), end: round3(a.end) } })),
   ]
 }
 
 const linesFromCorners = (pts, e) => pts.map((a, i) => {
   const b = pts[(i + 1) % pts.length]
-  return { id: uid(), type: 'line', is_construction: !!e?.is_construction, data: { x1: round3(a.x), y1: round3(a.y), x2: round3(b.x), y2: round3(b.y) } }
+  return { id: uid(), type: 'line', is_construction: !!e?.is_construction, ...(e?.dlayer ? { dlayer: e.dlayer } : {}), data: { x1: round3(a.x), y1: round3(a.y), x2: round3(b.x), y2: round3(b.y) } }
 })
 export const polygonLines = linesFromCorners
 
@@ -518,7 +518,7 @@ export function filletLines(l1, c1, l2, c2, r) {
   if (arcSweep(a1, a2) > 180) [a1, a2] = [a2, a1]
   return {
     l1: upd(l1, s1, T1), l2: upd(l2, s2, T2),
-    arc: { id: uid(), type: 'arc', is_construction: false, data: { cx: C.x, cy: C.y, r, start: a1, end: a2 } },
+    arc: { id: uid(), type: 'arc', is_construction: false, ...(l1.dlayer ? { dlayer: l1.dlayer } : {}), data: { cx: C.x, cy: C.y, r, start: a1, end: a2 } },
   }
 }
 
