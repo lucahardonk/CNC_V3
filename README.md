@@ -53,6 +53,43 @@ Tutto è salvato in `./data` (volume `./data:/app/data`):
 
 Scorciatoie CAD: `Alt` disattiva lo snap, `Shift` ortogonale, `Ctrl+Z`/`Ctrl+Y` annulla/ripeti, `Canc` elimina, `H` adatta vista, `Esc` annulla strumento.
 
+### Import DXF
+
+Nel CAD 2D, il pulsante **Importa DXF** in alto carica un file `.dxf`, che viene letto dal backend con [ezdxf](https://ezdxf.mozman.at/) (`POST /api/dxf/parse`).
+- **Entità supportate:** LINE, ARC, CIRCLE, LWPOLYLINE e POLYLINE (i bulge diventano archi), SPLINE (approssimata con punti), ELLIPSE e blocchi INSERT (esplosi).
+- **Unità:** vengono convertite in mm automaticamente in base a `$INSUNITS` (per esempio 4 = mm, 1 = pollici ×25.4).
+- **Anteprima:** prima dell'inserimento si apre un'anteprima sullo stock. Qui si sceglie il posizionamento (centrato, angolo dello stock o coordinate originali), una scala aggiuntiva, quali layer importare e se importare come costruzione.
+- **Layer:** i layer del DXF diventano layer di disegno, con il loro colore ACI/true color.
+
+### Layer di disegno
+
+Il pannello **Layer** a destra organizza le entità del layer di lavorazione corrente, in stile AutoCAD:
+- **Per ogni layer:** visibilità (occhio), blocco (lucchetto), colore (clic sul quadratino) e nome (doppio clic per rinominare).
+- **Layer 0:** è sempre presente e accoglie le entità non assegnate. Eliminando un layer (cestino), le sue entità passano al Layer 0.
+- **Nuovo layer:** pulsante `+` (nome + colore). Il layer evidenziato è il *layer corrente*, dove finiscono le nuove entità.
+- **Assegnare la selezione a un layer:** in tre modi:
+  - tasto destro sul canvas → *Assegna a layer* (layer esistente o *Nuovo layer…*);
+  - trascinare il badge "N entità selezionate" su un layer;
+  - il menu *Layer* nel pannello Proprietà.
+- **Layer nascosti:** non vengono disegnati e sono **esclusi dal G-code**.
+- **Layer bloccati:** restano visibili (anche per lo snap), ma non sono selezionabili né modificabili.
+
+### Selezione e misure
+
+- **Selezione:**
+  - click = entità più vicina;
+  - trascinamento nel vuoto = selezione rettangolare;
+  - `Ctrl`/`Shift`+click = aggiungi o rimuovi dalla selezione;
+  - `Esc` = deseleziona.
+
+  Le entità selezionate sono blu, con quadratini sui vertici.
+- **Pannello Proprietà / Misure:** è sempre visibile.
+  - **Linea:** lunghezza, ΔX, ΔY e angolo.
+  - **Cerchio:** diametro, raggio e circonferenza.
+  - **Arco:** raggio, angolo iniziale e finale, ampiezza, lunghezza dell'arco e corda.
+  - **Selezione multipla:** numero di entità e lunghezza totale delle linee.
+- **Misura distanza** (toolbar, gruppo misura, tasto `N`): click sul punto A, poi sul punto B → distanza, ΔX, ΔY e angolo, con snap sui punti.
+
 ## Sviluppo locale (senza Docker)
 
 ```bash
