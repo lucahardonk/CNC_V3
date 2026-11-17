@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import DATA_DIR, FRONTEND_DIST, ensure_data_files, read_json
 from database import init_db
-from routers import entities, export, grbl as grbl_router, layers, projects, settings, tools
+from routers import dxf, entities, export, grbl as grbl_router, layers, projects, settings, tools
 from services.grbl_service import grbl
 
 log = logging.getLogger("cnc.app")
@@ -48,7 +48,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"])
 
 for r in (projects.router, layers.router, entities.router, tools.router, settings.router,
-          grbl_router.router, export.router):
+          grbl_router.router, export.router, dxf.router):
     app.include_router(r, prefix="/api")
 
 

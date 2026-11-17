@@ -37,6 +37,8 @@ class Layer(Base):
     params = Column(JSON, nullable=True, default=dict)
     gcode = Column(Text, nullable=True)
     is_complete = Column(Boolean, nullable=False, default=False)
+    # layer di disegno (stile AutoCAD) interni al disegno: [{id, name, color, visible, locked}]
+    draw_layers = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     project = relationship("Project", back_populates="layers")

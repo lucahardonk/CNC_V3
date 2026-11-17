@@ -9,3 +9,4 @@ numpy<2.1
 rich==13.7.1
 python-multipart==0.0.9
 aiofiles==23.2.1
+ezdxf==1.4.5

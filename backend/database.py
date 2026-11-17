@@ -27,6 +27,10 @@ async def init_db() -> None:
     import models  # noqa: F401  (registra i modelli)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # migrazioni leggere (colonne aggiunte dopo la prima versione)
+        cols = {r[1] for r in (await conn.exec_driver_sql("PRAGMA table_info(layers)")).fetchall()}
+        if "draw_layers" not in cols:
+            await conn.exec_driver_sql("ALTER TABLE layers ADD COLUMN draw_layers JSON")
 
 
 async def get_db():

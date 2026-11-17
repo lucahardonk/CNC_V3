@@ -49,6 +49,7 @@ class LayerUpdate(BaseModel):
     operation: Optional[Operation] = None
     params: Optional[dict[str, Any]] = None
     is_complete: Optional[bool] = None
+    draw_layers: Optional[list[dict[str, Any]]] = None
 
 
 class LayerResponse(LayerBase):
@@ -59,6 +60,7 @@ class LayerResponse(LayerBase):
     gcode: Optional[str] = None
     is_complete: bool = False
     entity_count: int = 0
+    draw_layers: list[dict[str, Any]] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

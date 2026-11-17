@@ -23,6 +23,7 @@ def layer_to_response(l: Layer) -> LayerResponse:
     return LayerResponse(id=l.id, project_id=l.project_id, name=l.name, order_index=l.order_index,
                          tool_id=l.tool_id, operation=l.operation, params=l.params or {}, gcode=l.gcode,
                          is_complete=bool(l.is_complete), entity_count=len(l.entities or []),
+                         draw_layers=l.draw_layers or [],
                          created_at=l.created_at, updated_at=l.updated_at)
 
 
@@ -147,9 +148,18 @@ async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depe
         bridge_height=float(body.bridge_height if body.bridge_height is not None else cutting.get("bridge_height", 1.5)),
         stock_z=project.stock_z, pocket_direction=body.pocket_direction,
     )
-    entities = [{"type": e.type, "data": e.data, "is_construction": e.is_construction} for e in l.entities]
+    # le entità sui layer di disegno nascosti non vengono lavorate (come i layer spenti in AutoCAD)
+    hidden = {dl.get("id") for dl in (l.draw_layers or []) if dl.get("visible") is False}
+    entities, n_hidden = [], 0
+    for e in l.entities:
+        if ((e.data or {}).get("_meta") or {}).get("dlayer", "0") in hidden:
+            n_hidden += 1
+            continue
+        entities.append({"type": e.type, "data": e.data, "is_construction": e.is_construction})
     try:
         result = generate_gcode(entities, params)
+        if n_hidden:
+            result.warnings.append(f"{n_hidden} entità su layer di disegno nascosti escluse dal percorso")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
