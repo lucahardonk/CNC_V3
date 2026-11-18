@@ -1,0 +1,51 @@
+# Parametri GRBL 1.1h – CNC Luca Hardonk
+# Letti da: jserialcomm://ttyUSB0:115200
+# Data: 2026-11-18
+# Hardware: 3 assi (X, Y-doppio, Z), 4 motori totali
+# WCO letto al momento della connessione: X=73.000 Y=-20.000 Z=71.000
+
+$0 = 8     (Step pulse time, microseconds)
+$1 = 25    (Step idle delay, milliseconds)
+$2 = 0     (Step pulse invert, mask)
+$3 = 0     (Step direction invert, mask)
+$4 = 0     (Invert step enable pin, boolean)
+$5 = 0     (Invert limit pins, boolean)
+$6 = 0     (Invert probe pin, boolean)
+$10 = 1    (Status report options, mask)
+$11 = 0.010  (Junction deviation, millimeters)
+$12 = 0.002  (Arc tolerance, millimeters)
+$13 = 0    (Report in inches, boolean)
+$20 = 0    (Soft limits enable, boolean)
+$21 = 0    (Hard limits enable, boolean)
+$22 = 1    (Homing cycle enable, boolean)
+$23 = 0    (Homing direction invert, mask)
+$24 = 600.000  (Homing locate feed rate, mm/min)
+$25 = 200.000  (Homing search seek rate, mm/min)
+$26 = 10   (Homing switch debounce delay, milliseconds)
+$27 = 2.000  (Homing switch pull-off distance, millimeters)
+$30 = 24000  (Maximum spindle speed, RPM)
+$31 = 0    (Minimum spindle speed, RPM)
+$32 = 0    (Laser-mode enable, boolean)
+$100 = 1600.000  (X-axis travel resolution, step/mm)
+$101 = 1600.000  (Y-axis travel resolution, step/mm)
+$102 = 1600.000  (Z-axis travel resolution, step/mm)
+$110 = 1500.000  (X-axis maximum rate, mm/min)
+$111 = 1500.000  (Y-axis maximum rate, mm/min)
+$112 = 1500.000  (Z-axis maximum rate, mm/min)
+$120 = 200.000   (X-axis acceleration, mm/sec^2)
+$121 = 200.000   (Y-axis acceleration, mm/sec^2)
+$122 = 200.000   (Z-axis acceleration, mm/sec^2)
+$130 = 1000.000  (X-axis maximum travel, millimeters)
+$131 = 1000.000  (Y-axis maximum travel, millimeters)
+$132 = 300.000   (Z-axis maximum travel, millimeters)
+
+# Stato modale ($G):
+# G0 G54 G17 G21 G90 G94 M5 M9 T0 F0 S0
+# (rapido, sistema coord 1, piano XY, mm, assoluto, feed/min, mandrino off, raffreddamento off)
+
+# Note:
+# - step/mm 1600 con driver 1/8 step e vite M5 (1mm/giro) oppure vite da 1.25mm/giro – verificare
+# - homing abilitato ($22=1): eseguire $H prima di lavorare
+# - soft limits disabilitati ($20=0): abilitare dopo aver verificato le corse reali
+# - hard limits disabilitati ($21=0): verificare cablaggio endstop prima di abilitare
+# - mandrino max 24000 RPM ($30=24000)
