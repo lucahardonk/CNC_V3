@@ -313,7 +313,8 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             <CADCanvas entities={entities} onChange={commit} selected={selected} setSelected={setSelected} tool={tool} setTool={setTool}
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
               onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} pickLine={parallelFor ? onPickParallel : null}
-              drawLayers={drawLayers} fitRequest={fitRequest} onMeasure={setCanvasMeasure} />
+              drawLayers={drawLayers} fitRequest={fitRequest} onMeasure={setCanvasMeasure}
+              toolpath={{ diameter: Number(layer.tool_diameter) || 0, operation: layer.operation }} />
           )}
         </div>
         <aside className="flex w-72 shrink-0 flex-col border-l border-line bg-bg-panel text-sm">
@@ -490,10 +491,13 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
     const toolId = layer.tool_id || prev.tool_id || tools[0]?.id
     setResult(null)
     setF({
-      operation: layer.operation || 'profile_outside', tool_id: toolId, depth_total: prev.depth_total || Math.min(3, project.stock_z),
-      pocket_direction: prev.pocket_direction || 'horizontal', safe_height: settings?.cutting?.safe_height ?? 5,
+      operation: layer.operation || 'profile_outside', tool_id: toolId,
+      pocket_direction: prev.pocket_direction || 'horizontal',
       bridge_height: settings?.cutting?.bridge_height ?? 1.5, ...defaultsFor(toolId),
-      ...(prev.tool_id === toolId ? { feed_rate: prev.feed_rate, plunge_rate: prev.plunge_rate, spindle_rpm: prev.spindle_rpm, step_over: prev.step_over, depth_per_pass: prev.depth_per_pass } : {}),
+      ...(prev.tool_id === toolId ? { plunge_rate: prev.plunge_rate, step_over: prev.step_over } : {}),
+      // parametri di taglio propri del layer (pannello Layer): prevalgono su materiale/utensile
+      feed_rate: layer.feed_rate ?? 600, spindle_rpm: layer.spindle_rpm ?? 12000,
+      depth_total: Math.abs(layer.z_depth ?? -2), depth_per_pass: layer.z_pass_depth ?? 1, safe_height: layer.z_safe ?? 5,
     })
   }, [open, drawLayer?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -592,7 +596,7 @@ function GenerateModal({ open, onClose, project, layer, tools, materials, settin
           {num('safe_height', 'Altezza sicurezza', 0.5, 'Quota Z per i movimenti rapidi.')}
           {hasBridges && f.operation !== 'pocket' && num('bridge_height', 'Altezza ponticelli', 0.1, 'Materiale lasciato sotto i ponticelli (dal fondo del taglio).')}
         </div>
-        <p className="text-xs text-gray-500">Parametri pre-caricati dal materiale <b className="text-gray-300">{mat.name}</b> e dall'utensile <b className="text-gray-300">{tool?.name}</b> (valore più conservativo).</p>
+        <p className="text-xs text-gray-500">Feed, RPM, profondità, passata e Z sicurezza sono quelli del layer <b className="text-gray-300">{layer.name}</b>; generando il G-code i valori usati vengono salvati nel layer. Plunge e step-over da materiale <b className="text-gray-300">{mat.name}</b> / utensile <b className="text-gray-300">{tool?.name}</b>.</p>
         {result && (
           <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
             <div className="grid grid-cols-4 gap-2 text-center">

@@ -19,11 +19,17 @@ router = APIRouter(tags=["layers"])
 log = logging.getLogger("cnc.layers")
 
 
+# parametri di taglio per layer e relativi default (macchina reale: feed max 1500, RPM max 24000)
+CUT_DEFAULTS = {"tool_diameter": 3.175, "tool_type": "flat", "feed_rate": 600.0, "spindle_rpm": 12000,
+                "z_safe": 5.0, "z_depth": -2.0, "z_pass_depth": 1.0}
+
+
 def layer_to_response(l: Layer) -> LayerResponse:
     return LayerResponse(id=l.id, project_id=l.project_id, name=l.name, order_index=l.order_index,
                          tool_id=l.tool_id, operation=l.operation, params=l.params or {}, gcode=l.gcode,
                          is_complete=bool(l.is_complete), entity_count=len(l.entities or []),
                          draw_layers=l.draw_layers or [],
+                         **{k: getattr(l, k) if getattr(l, k) is not None else d for k, d in CUT_DEFAULTS.items()},
                          created_at=l.created_at, updated_at=l.updated_at)
 
 
@@ -54,7 +60,7 @@ async def create_layer(project_id: str, body: LayerCreate, db: AsyncSession = De
     if idx is None:
         idx = ((await db.execute(select(func.max(Layer.order_index)).where(Layer.project_id == project_id))).scalar() or -1) + 1
     l = Layer(project_id=project_id, name=body.name, tool_id=body.tool_id, operation=body.operation,
-              params=body.params, order_index=idx)
+              params=body.params, order_index=idx, **{k: getattr(body, k) for k in CUT_DEFAULTS})
     db.add(l)
     await _touch_project(db, project_id)
     await db.commit()
@@ -63,9 +69,13 @@ async def create_layer(project_id: str, body: LayerCreate, db: AsyncSession = De
 
 
 @router.put("/layers/{layer_id}", response_model=LayerResponse)
+@router.patch("/layers/{layer_id}", response_model=LayerResponse)
 async def update_layer(layer_id: str, body: LayerUpdate, db: AsyncSession = Depends(get_db)):
+    """Aggiornamento parziale (PUT e PATCH equivalenti): salva solo i campi inviati."""
     l = await _layer(db, layer_id)
     for k, v in body.model_dump(exclude_unset=True).items():
+        if v is None and k in CUT_DEFAULTS:
+            continue  # colonne NOT NULL: null = invariato
         setattr(l, k, v)
     await _touch_project(db, l.project_id)
     await db.commit()
@@ -124,48 +134,12 @@ def draw_layers_of(l: Layer) -> list[dict]:
     return dls
 
 
-async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
-    """Calcola il G-code di un layer di lavorazione con i parametri richiesti.
-
-    body.draw_layer_id = None → tutte le entità sui layer di disegno visibili;
-    altrimenti solo quelle del layer di disegno indicato (che deve essere visibile).
-    Ritorna (result, params, tool_id, operation, scope) senza salvare nulla."""
-    project = await db.get(Project, l.project_id)
-    tools = read_json("tools.json")
-    materials = read_json("materials.json")
-    settings = read_json("settings.json")
-    tool_id = body.tool_id or l.tool_id
-    tool = next((t for t in tools if t.get("id") == tool_id), None)
-    if tool is None:
-        raise HTTPException(400, "Seleziona un utensile valido")
-    mat = materials.get(project.material, {})
-    cutting = settings.get("cutting", {})
-    operation = body.operation or l.operation
-
-    # priorità: valori richiesti > materiale (più conservativo tra materiale e utensile) > utensile
-    def pick(key, default):
-        val = getattr(body, key, None)
-        if val is not None:
-            return float(val)
-        cands = [float(x) for x in (mat.get(key), tool.get(key)) if x is not None]
-        return min(cands) if cands else default
-
-    params = Params(
-        operation=operation, tool_diameter=float(tool["diameter"]), tool_name=tool.get("name", tool_id),
-        material=mat.get("name", project.material),
-        feed_rate=pick("feed_rate", 1000), plunge_rate=pick("plunge_rate", 250),
-        spindle_rpm=float(body.spindle_rpm or tool.get("spindle_rpm") or mat.get("spindle_rpm") or 18000),
-        depth_total=body.depth_total,
-        depth_per_pass=float(body.depth_per_pass or mat.get("depth_per_pass") or 1.0),
-        step_over=pick("step_over", 0.4),
-        safe_height=float(body.safe_height if body.safe_height is not None else cutting.get("safe_height", 5.0)),
-        bridge_height=float(body.bridge_height if body.bridge_height is not None else cutting.get("bridge_height", 1.5)),
-        stock_z=project.stock_z, pocket_direction=body.pocket_direction,
-    )
+def layer_entities(l: Layer, only: str | None = None):
+    """Entità lavorabili del layer: tutte quelle sui layer di disegno visibili (only=None) oppure solo
+    quelle del layer di disegno `only`. Ritorna (entities, info, n_hidden, scope)."""
     dls = draw_layers_of(l)
     info = {d["id"]: {"name": d.get("name"), "color": d.get("color")} for d in dls}
     hidden = {d["id"] for d in dls if d.get("visible") is False}
-    only = body.draw_layer_id
     scope = None
     if only is not None:
         scope = next((d for d in dls if d["id"] == only), None)
@@ -187,6 +161,63 @@ async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
         entities.append({"type": e.type, "data": e.data, "is_construction": e.is_construction, "dlayer": dl})
     if only is not None and not entities:
         raise HTTPException(400, f"Il layer \"{scope.get('name')}\" non contiene entità")
+    return entities, info, n_hidden, scope
+
+
+def _cut(l: Layer, key: str):
+    v = getattr(l, key, None)
+    return CUT_DEFAULTS[key] if v is None else v
+
+
+def layer_params(project: Project, l: Layer, body: GenerateRequest | None = None) -> tuple[Params, str | None]:
+    """Parametri di taglio: valori della richiesta (dialog) > parametri del layer > default.
+    Se è indicato un utensile della libreria il suo diametro prevale su quello del layer."""
+    body = body or GenerateRequest()
+    tools = read_json("tools.json")
+    materials = read_json("materials.json")
+    settings = read_json("settings.json")
+    mat = materials.get(project.material, {})
+    cutting = settings.get("cutting", {})
+    prev = l.params or {}
+    tool_id = body.tool_id or l.tool_id
+    tool = next((t for t in tools if t.get("id") == tool_id), None)
+    if body.tool_id and tool is None:
+        raise HTTPException(400, "Utensile non trovato nella libreria")
+    diameter = float(tool["diameter"]) if (body.tool_id and tool) else float(_cut(l, "tool_diameter"))
+    feed = float(body.feed_rate or _cut(l, "feed_rate"))
+
+    def first(*vals, default):
+        return next((float(v) for v in vals if v is not None), default)
+
+    params = Params(
+        operation=body.operation or l.operation,
+        tool_diameter=diameter,
+        tool_name=(tool.get("name", tool_id) if (body.tool_id and tool) else
+                   {"flat": "Fresa piatta", "ball": "Fresa sferica", "vbit": "Fresa a V"}.get(_cut(l, "tool_type"), "Fresa")),
+        material=mat.get("name", project.material),
+        feed_rate=feed,
+        plunge_rate=first(body.plunge_rate, prev.get("plunge_rate"), default=round(max(50.0, feed * 0.3))),
+        spindle_rpm=first(body.spindle_rpm, default=float(_cut(l, "spindle_rpm"))),
+        depth_total=first(body.depth_total, default=abs(float(_cut(l, "z_depth")))),
+        depth_per_pass=first(body.depth_per_pass, default=float(_cut(l, "z_pass_depth"))),
+        step_over=first(body.step_over, prev.get("step_over"), (tool or {}).get("step_over"), default=0.4),
+        safe_height=first(body.safe_height, default=float(_cut(l, "z_safe"))),
+        bridge_height=first(body.bridge_height, cutting.get("bridge_height"), default=1.5),
+        stock_z=project.stock_z, pocket_direction=body.pocket_direction,
+    )
+    return params, (tool_id if tool else None)
+
+
+async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
+    """Calcola il G-code di un layer di lavorazione con i parametri richiesti.
+
+    body.draw_layer_id = None → tutte le entità sui layer di disegno visibili;
+    altrimenti solo quelle del layer di disegno indicato (che deve essere visibile).
+    Ritorna (result, params, tool_id, operation, scope) senza salvare nulla."""
+    project = await db.get(Project, l.project_id)
+    params, tool_id = layer_params(project, l, body)
+    operation = params.operation
+    entities, info, n_hidden, scope = layer_entities(l, body.draw_layer_id)
     try:
         result = generate_gcode(entities, params, layer_info=info)
         if n_hidden:
@@ -221,6 +252,13 @@ async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depe
                 "bridge_height": params.bridge_height,
                 "draw_layer_id": scope["id"] if scope else None,
                 "draw_layer_name": scope.get("name") if scope else None}
+    # i valori usati diventano i parametri di taglio del layer (indipendenti dagli altri layer)
+    l.tool_diameter = params.tool_diameter
+    l.feed_rate = params.feed_rate
+    l.spindle_rpm = int(params.spindle_rpm)
+    l.z_safe = params.safe_height
+    l.z_depth = -params.depth_total
+    l.z_pass_depth = params.depth_per_pass
     l.is_complete = False
     await _touch_project(db, l.project_id)
     await db.commit()

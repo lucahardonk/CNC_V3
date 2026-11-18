@@ -32,6 +32,12 @@ export const DIM_TYPES = ['dimension', 'dim_radial', 'dim_angle']
 export const isDim = (e) => DIM_TYPES.includes(e.type)
 
 // --------------------------------------------------------------------------- curve di supporto
+// Rettangolo normalizzato: x/y = angolo minimo, w/h sempre positivi (anche se salvato con w/h negativi)
+export function rectBox(d) {
+  const w = Number(d.w) || 0, h = Number(d.h) || 0
+  return { ...d, x: Math.min(d.x, d.x + w), y: Math.min(d.y, d.y + h), w: Math.abs(w), h: Math.abs(h) }
+}
+
 export function rectLines(d) {
   const { x, y, w, h } = d
   const p = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]
@@ -287,7 +293,7 @@ const bboxOfPts = (pts) => ({
 export function bbox(e) {
   const d = e.data
   switch (e.type) {
-    case 'rect': case 'bridge': return { minX: d.x, minY: d.y, maxX: d.x + d.w, maxY: d.y + d.h }
+    case 'rect': case 'bridge': { const r = rectBox(d); return { minX: r.x, minY: r.y, maxX: r.x + r.w, maxY: r.y + r.h } }
     case 'circle': case 'arc': case 'dim_radial': case 'dim_angle':
       return { minX: d.cx - d.r, minY: d.cy - d.r, maxX: d.cx + d.r, maxY: d.cy + d.r }
     case 'ellipse':
@@ -560,8 +566,9 @@ export function applyDimParam(target, param, val) {
       if (L < 1e-9) return null
       return { ...t, x2: round3(t.x1 + (t.x2 - t.x1) / L * val), y2: round3(t.y1 + (t.y2 - t.y1) / L * val) }
     }
-    case 'width': return target.type === 'rect' ? { ...t, w: round3(val) } : null
-    case 'height': return target.type === 'rect' ? { ...t, h: round3(val) } : null
+    // il segno di w/h viene mantenuto (i vertici v0..v3 restano gli stessi per vincoli e quote)
+    case 'width': return target.type === 'rect' ? { ...t, w: round3((t.w < 0 ? -1 : 1) * val) } : null
+    case 'height': return target.type === 'rect' ? { ...t, h: round3((t.h < 0 ? -1 : 1) * val) } : null
     case 'diameter': return { ...t, r: round3(val / 2) }
     case 'radius': return { ...t, r: round3(val) }
     default: return null

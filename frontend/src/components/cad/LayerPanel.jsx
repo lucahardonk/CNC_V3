@@ -1,19 +1,48 @@
-import { useState } from 'react'
-import { CheckCircle2, Circle, Download, Eye, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, Download, Eye, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
 import Tooltip from '../common/Tooltip'
 import { layerColor } from './geometry'
 import { OPERATION_NAMES, useStore } from '../../store/store'
+import { errMsg, Export, Layers } from '../../services/api'
 
-export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, onCut, onAdd, onDelete, onRename, onMove }) {
+// Limiti della macchina reale (GRBL 1.1h): oltre questi valori il campo diventa rosso
+export const MACHINE_LIMITS = { feed: 1500, rpm: 24000 }
+const TOOL_TYPES = { flat: 'Piatta', ball: 'Sferica', vbit: 'V' }
+// campo → [etichetta, step, validazione, suggerimento]
+const CUT_FIELDS = {
+  tool_diameter: ['Diametro fresa (mm)', 0.1, (v) => v >= 0 && v <= 50, 'Diametro della fresa: usato per il percorso e per l\'anteprima arancione nel CAD.'],
+  feed_rate: ['Feed (mm/min)', 10, (v) => v > 0, `Avanzamento in taglio (G1 F). Massimo macchina ${MACHINE_LIMITS.feed} mm/min.`],
+  spindle_rpm: ['RPM mandrino', 500, (v) => v >= 0 && Number.isInteger(v), `Velocità mandrino (M3 S). Massimo ${MACHINE_LIMITS.rpm} RPM.`],
+  z_safe: ['Z sicurezza (mm)', 0.5, (v) => v >= 0, 'Quota Z per i movimenti rapidi (G0) sopra il pezzo.'],
+  z_depth: ['Profondità finale (mm)', 0.1, (v) => v < 0, 'Quota Z finale del taglio, negativa (Z0 = superficie del pezzo).'],
+  z_pass_depth: ['Passata per volta (mm)', 0.1, (v) => v > 0, 'Profondità asportata per ogni passata: più passate fino alla profondità finale.'],
+}
+const fieldWarn = (k, v) => (k === 'feed_rate' && v > MACHINE_LIMITS.feed ? `Oltre il massimo macchina (${MACHINE_LIMITS.feed} mm/min)`
+  : k === 'spindle_rpm' && v > MACHINE_LIMITS.rpm ? `Oltre il massimo macchina (${MACHINE_LIMITS.rpm} RPM)` : null)
+
+export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, onCut, onAdd, onDelete, onRename, onMove, projectId, onLayerUpdated }) {
   const tools = useStore((s) => s.tools)
+  const notify = useStore((s) => s.notify)
   const [editing, setEditing] = useState(null)
   const [name, setName] = useState('')
+  const [open, setOpen] = useState(() => new Set())
+  const [busy, setBusy] = useState(null) // id layer o 'all' durante l'export
+  const toggle = (id) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+
+  const exportNc = async (key, fn) => {
+    setBusy(key)
+    try { notify(`Scaricato ${await fn()}`, 'success') } catch (e) { notify(`Export fallito: ${errMsg(e)}`, 'error') } finally { setBusy(null) }
+  }
 
   return (
     <div className="flex h-full w-[280px] shrink-0 flex-col border-r border-line bg-bg-panel">
       <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
-        <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Layer di lavorazione</span>
-        <span className="text-xs text-gray-500">{layers.length}</span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Layer di lavorazione <span className="text-gray-500">{layers.length}</span></span>
+        <button disabled={!layers.length || busy === 'all'} onClick={() => exportNc('all', () => Export.projectNc(projectId))}
+          title="Un unico .nc con tutti i layer in sequenza (pausa M0 per il cambio punta tra un layer e l'altro)"
+          className="shrink-0 whitespace-nowrap rounded border border-line px-2 py-1 text-[11px] text-gray-300 transition hover:border-accent hover:text-accent disabled:opacity-40">
+          {busy === 'all' ? '…' : '⬇ Esporta tutti'}
+        </button>
       </div>
       <div className="flex-1 space-y-1.5 overflow-y-auto p-2">
         {layers.length === 0 && <p className="p-3 text-center text-xs text-gray-500">Nessun layer. Crea il primo layer per iniziare a disegnare.</p>}
@@ -45,12 +74,15 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
                 <Btn tip={l.gcode ? 'Vai al taglio' : 'Genera prima il G-code'} disabled={!l.gcode} onClick={() => onCut(l.id)} active={mode === 'cutting' && active} green><Play size={13} /></Btn>
                 <Btn tip="Mostra nel 3D" onClick={() => onSelect(l.id, true)}><Eye size={13} /></Btn>
                 {l.gcode && <a href={`/api/layers/${l.id}/gcode`} onClick={(e) => e.stopPropagation()}><Btn tip="Scarica .nc"><Download size={13} /></Btn></a>}
+                <Btn tip="Parametri di taglio del layer" onClick={() => toggle(l.id)} active={open.has(l.id)}>{open.has(l.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</Btn>
                 <div className="ml-auto flex opacity-0 transition group-hover:opacity-100">
                   <Btn tip="Sposta su" disabled={i === 0} onClick={() => onMove(l.id, -1)}><ArrowUp size={13} /></Btn>
                   <Btn tip="Sposta giù" disabled={i === layers.length - 1} onClick={() => onMove(l.id, 1)}><ArrowDown size={13} /></Btn>
                   <Btn tip="Elimina layer" onClick={() => onDelete(l)} red><Trash2 size={13} /></Btn>
                 </div>
               </div>
+              {open.has(l.id) && <CutParams layer={l} onLayerUpdated={onLayerUpdated} notify={notify}
+                exporting={busy === l.id} onExport={() => exportNc(l.id, () => Export.layerNc(l.id))} />}
             </div>
           )
         })}
@@ -72,3 +104,70 @@ const Btn = ({ children, tip, onClick, disabled, active, green, red }) => (
     </button>
   </Tooltip>
 )
+
+// Parametri di taglio di un layer: ogni modifica valida viene salvata subito (PATCH, debounce 300 ms)
+function CutParams({ layer, onLayerUpdated, notify, onExport, exporting }) {
+  const [draft, setDraft] = useState({})
+  const pending = useRef({})
+  const timer = useRef(null)
+  const flush = async () => {
+    clearTimeout(timer.current)
+    const body = pending.current
+    pending.current = {}
+    if (!Object.keys(body).length) return
+    try { onLayerUpdated?.(await Layers.patch(layer.id, body)) } catch (e) { notify(`Salvataggio parametri fallito: ${errMsg(e)}`, 'error') }
+  }
+  useEffect(() => () => { flush() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const save = (k, v) => {
+    pending.current = { ...pending.current, [k]: v }
+    clearTimeout(timer.current)
+    timer.current = setTimeout(flush, 300)
+  }
+  const onNum = (k, raw) => {
+    setDraft((d) => ({ ...d, [k]: raw }))
+    const v = Number(raw)
+    if (raw !== '' && Number.isFinite(v) && CUT_FIELDS[k][2](v)) save(k, v)
+  }
+  const num = (k) => {
+    const [label, step, valid, tip] = CUT_FIELDS[k]
+    const raw = draft[k] ?? String(layer[k] ?? '')
+    const v = Number(raw)
+    const invalid = raw === '' || !Number.isFinite(v) || !valid(v)
+    const warn = !invalid && fieldWarn(k, v)
+    return (
+      <label key={k} className="block">
+        <Tooltip text={tip}><span className="mb-0.5 block cursor-help text-[10px] text-gray-500">{label}</span></Tooltip>
+        <input type="number" step={step} value={raw} onClick={(e) => e.stopPropagation()} onChange={(e) => onNum(k, e.target.value)} onBlur={flush}
+          className={`input py-1 text-xs ${invalid || warn ? 'border-red-500 text-red-400' : ''}`} />
+        {warn && <span className="mt-0.5 block text-[10px] leading-tight text-red-400">⚠ {warn}</span>}
+        {invalid && <span className="mt-0.5 block text-[10px] leading-tight text-red-400">Valore non valido{k === 'z_depth' ? ' (deve essere negativo)' : ''}</span>}
+      </label>
+    )
+  }
+  const passes = Math.max(1, Math.ceil(Math.abs(Number(layer.z_depth) || 0) / (Number(layer.z_pass_depth) || 1) - 1e-9))
+  return (
+    <div className="ml-7 mt-2 space-y-2 border-t border-line pt-2" onClick={(e) => e.stopPropagation()}>
+      <div className="grid grid-cols-2 gap-2">
+        {num('tool_diameter')}
+        <label className="block">
+          <span className="mb-0.5 block text-[10px] text-gray-500">Tipo fresa</span>
+          <select className="input py-1 text-xs" value={layer.tool_type || 'flat'}
+            onChange={(e) => { onLayerUpdated?.({ ...layer, tool_type: e.target.value }); save('tool_type', e.target.value); flush() }}>
+            {Object.entries(TOOL_TYPES).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+          </select>
+        </label>
+        {num('feed_rate')}
+        {num('spindle_rpm')}
+        {num('z_safe')}
+        {num('z_depth')}
+        {num('z_pass_depth')}
+      </div>
+      <p className="text-[10px] text-gray-500">{OPERATION_NAMES[layer.operation] || layer.operation} · {passes} passat{passes === 1 ? 'a' : 'e'} fino a Z{layer.z_depth}</p>
+      <button disabled={exporting || !layer.entity_count} onClick={onExport}
+        title={layer.entity_count ? 'Scarica il .nc di questo layer con i suoi parametri' : 'Layer vuoto: disegna qualcosa prima'}
+        className="w-full rounded border border-line py-1.5 text-xs text-gray-300 transition hover:border-accent hover:text-accent disabled:opacity-40">
+        {exporting ? 'Generazione…' : '⬇ Esporta layer'}
+      </button>
+    </div>
+  )
+}
