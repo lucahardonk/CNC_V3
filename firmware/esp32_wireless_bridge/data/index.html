@@ -318,7 +318,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
       <div style="flex:1"></div>
       <button class="vb" onclick="viewer.fit()">⊡ Fit</button>
       <button class="vb" onclick="viewer.reset()">↺</button>
-      <button class="vb" id="vo-btn" title="Opzioni mouse 3D" onclick="g('vo-pnl').classList.toggle('show')">⚙ Mouse</button>
+      <button class="vb" id="vo-btn" title="Opzioni mouse 3D" onclick="g('vo-pnl').classList.toggle('show')">Mouse</button>
       <span id="cpos" style="font-size:9px;color:var(--muted);margin-left:6px">—</span>
     </div>
     <div id="vwrap"><canvas id="cv"></canvas>
@@ -1110,20 +1110,42 @@ const viewer = (() => {
     }
   }
 
+  // Indicatore punta: cono 3D (punta verso il basso) disegnato in world-space
+  // nella posizione WPos ricevuta da GRBL. Disegnato per ultimo → sempre visibile.
   function drawTool() {
+    const b = bbox;
+    const maxDim = Math.max(b.x1-b.x0, b.y1-b.y0, b.z1-b.z0, 1);
+    const h = Math.min(10, Math.max(2, maxDim*0.025));   // altezza cono [mm]
+    const r = h*0.4;                                      // raggio base [mm]
     const s = proj(tool.x,tool.y,tool.z);
     const g0 = proj(tool.x,tool.y,0);
     // linea di quota verso il piano Z=0
     ctx.strokeStyle = C.tool+'66'; ctx.lineWidth = 1; ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(s.sx,s.sy); ctx.lineTo(g0.sx,g0.sy); ctx.stroke(); ctx.setLineDash([]);
-    const r = 8;
-    ctx.beginPath(); ctx.arc(s.sx,s.sy,r,0,Math.PI*2);
-    ctx.fillStyle = C.tool+'55'; ctx.fill();
-    ctx.strokeStyle = C.tool; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(s.sx-r*1.8,s.sy); ctx.lineTo(s.sx+r*1.8,s.sy);
-    ctx.moveTo(s.sx,s.sy-r*1.8); ctx.lineTo(s.sx,s.sy+r*1.8);
-    ctx.stroke();
+    // punti proiettati: punta + cerchio di base a Z+h
+    const N = 20, pts = [[s.sx,s.sy]], base = [];
+    for (let i=0;i<N;i++){ const a=i/N*Math.PI*2;
+      const q = proj(tool.x+r*Math.cos(a), tool.y+r*Math.sin(a), tool.z+h);
+      base.push([q.sx,q.sy]); pts.push([q.sx,q.sy]); }
+    // inviluppo convesso (monotone chain) = sagoma del cono
+    pts.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+    const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+    const lo=[],up=[];
+    for (const p of pts){ while(lo.length>=2&&cr(lo[lo.length-2],lo[lo.length-1],p)<=0) lo.pop(); lo.push(p); }
+    for (let i=pts.length-1;i>=0;i--){ const p=pts[i]; while(up.length>=2&&cr(up[up.length-2],up[up.length-1],p)<=0) up.pop(); up.push(p); }
+    const hull = lo.slice(0,-1).concat(up.slice(0,-1));
+    // dimensione minima a schermo, per restare visibile anche con zoom lontano
+    let ext = 0; for (const p of hull) ext = Math.max(ext, Math.hypot(p[0]-s.sx,p[1]-s.sy));
+    const k = ext < 14 ? 14/Math.max(ext,1e-3) : 1;
+    const T = p => [s.sx+(p[0]-s.sx)*k, s.sy+(p[1]-s.sy)*k];
+    ctx.beginPath(); hull.forEach((p,i)=>{const t=T(p); i?ctx.lineTo(t[0],t[1]):ctx.moveTo(t[0],t[1]);}); ctx.closePath();
+    ctx.fillStyle = '#21262d'; ctx.fill();
+    ctx.strokeStyle = '#c9d1d9'; ctx.lineWidth = 1.2; ctx.stroke();
+    // bordo della base (ellisse)
+    ctx.beginPath(); base.forEach((p,i)=>{const t=T(p); i?ctx.lineTo(t[0],t[1]):ctx.moveTo(t[0],t[1]);}); ctx.closePath();
+    ctx.fillStyle = '#30363d'; ctx.fill(); ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1; ctx.stroke();
+    // punto rosso sulla punta
+    ctx.beginPath(); ctx.arc(s.sx,s.sy,2.2,0,Math.PI*2); ctx.fillStyle = C.tool; ctx.fill();
   }
 
   function draw() {
