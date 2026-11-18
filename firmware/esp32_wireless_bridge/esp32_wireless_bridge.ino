@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  esp32_wireless_bridge v2.2 — NodeMCU 1.0 (ESP8266 / ESP-12E)
+//  esp32_wireless_bridge v2.3 — NodeMCU 1.0 (ESP8266 / ESP-12E)
 //  Bridge WiFi + interfaccia web completa per GRBL 1.1h su Arduino Uno
 //
 //  Librerie (Library Manager):
@@ -73,12 +73,15 @@ struct StreamCtrl {
   int     acked    = 0;
   int     txInFlight = 0;                // byte stimati nel buffer RX di GRBL
   std::deque<int> pendingLen;            // lunghezze righe inviate senza ok
+  std::deque<String> pendingTxt;         // testo delle stesse righe (per errori)
+  int     flushAcks = 0;                 // ok/error del '\n' iniziale da scartare
   String  nextLine;                      // riga letta ma non ancora inviata
   File    file;
   unsigned long lastProgressMs = 0;
   unsigned long lastAckMs = 0;           // ultimo ok/error di una riga del job
   int     lastError = 0;                 // codice error:N che ha messo in pausa
   int     errLine   = 0;                 // riga del job che ha dato l'errore
+  String  errText;                       // testo della riga che ha dato l'errore
 } stream;
 
 String grblLineBuf;
@@ -122,7 +125,7 @@ void setup() {
   // Banner sulla USB prima dello swap (visibile nel Monitor Seriale)
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\n=== esp32_wireless_bridge v2.2 (ESP8266) ==="));
+  Serial.println(F("\n=== esp32_wireless_bridge v2.3 (ESP8266) ==="));
   Serial.println(F("RX GRBL = D7 (GPIO13, UART hardware)  TX GRBL = D5 (GPIO14)"));
   Serial.println(F("Da qui in poi la USB non riceve piu' log (vedi console web)."));
   Serial.flush();
@@ -338,6 +341,15 @@ void handleWsMsg(const String& msg) {
     if (!stream.file) { sendErrorMsg("Impossibile aprire il file G-code"); return; }
     stream.running = true;
     stream.lastAckMs = millis();
+    // '\n' iniziale: chiude un'eventuale riga parziale/spazzatura rimasta nel
+    // buffer di GRBL (disturbi sulla linea TX, comandi interrotti). Senza,
+    // GRBL la concatenerebbe alla riga 1 → error:2. La sua risposta viene
+    // scartata (flushAcks) e non conta come riga del job.
+    sendCmd("");
+    stream.txInFlight = 1;
+    stream.pendingLen.push_back(1);
+    stream.pendingTxt.push_back("");
+    stream.flushAcks = 1;
     broadcastProgress(true);
     DBG.printf("Streaming avviato: %d righe\n", stream.total);
 
@@ -346,7 +358,7 @@ void handleWsMsg(const String& msg) {
     // invia cycle-start.
     if (!stream.running) return;
     stream.paused = !stream.paused;
-    if (!stream.paused) { stream.lastError = 0; stream.errLine = 0; stream.lastAckMs = millis(); }
+    if (!stream.paused) { stream.lastError = 0; stream.errLine = 0; stream.errText = ""; stream.lastAckMs = millis(); }
     sendRaw(stream.paused ? '!' : '~');
     broadcastProgress(true);
 
@@ -428,8 +440,10 @@ void loopGrbl() {
                grblSt.name == "Idle" && now - stream.lastAckMs > 3000) {
       // GRBL fermo ma mancano degli ok: sono andati persi
       DBG.printf("Watchdog: %u ok mancanti\n", (unsigned)stream.pendingLen.size());
-      stream.acked += stream.pendingLen.size();
+      stream.acked += stream.pendingLen.size() - stream.flushAcks;
       stream.pendingLen.clear();
+      stream.pendingTxt.clear();
+      stream.flushAcks = 0;
       stream.txInFlight = 0;
       stream.lastAckMs = now;
       if (stream.eof) sendErrorMsg("Risposte 'ok' mancanti: job chiuso dal watchdog");
@@ -439,14 +453,19 @@ void loopGrbl() {
   }
 }
 
-// Consuma l'ok/error della riga più vecchia del job
-static void ackStreamLine() {
-  if (!stream.running || stream.pendingLen.empty()) return;
+// Consuma l'ok/error della riga più vecchia del job. Ritorna false se era
+// la risposta al '\n' di pulizia iniziale (non è una riga del job).
+static bool ackStreamLine(String* txt = nullptr) {
+  if (!stream.running || stream.pendingLen.empty()) return false;
   stream.txInFlight -= stream.pendingLen.front();
   if (stream.txInFlight < 0) stream.txInFlight = 0;
   stream.pendingLen.pop_front();
-  stream.acked++;
+  if (txt) *txt = stream.pendingTxt.empty() ? String() : stream.pendingTxt.front();
+  if (!stream.pendingTxt.empty()) stream.pendingTxt.pop_front();
   stream.lastAckMs = millis();
+  if (stream.flushAcks > 0) { stream.flushAcks--; return false; }
+  stream.acked++;
+  return true;
 }
 
 void processGrblLine(const String& line) {
@@ -467,16 +486,25 @@ void processGrblLine(const String& line) {
   if (line.startsWith("error:")) {
     int code = line.substring(6).toInt();
     bool inJob = stream.running && !stream.pendingLen.empty();
+    String errTxt;
+    if (inJob && !ackStreamLine(&errTxt)) {
+      // Errore sul '\n' di pulizia: GRBL aveva spazzatura nel buffer, ora
+      // scartata. Il job prosegue normalmente.
+      DBG.printf("Scartata riga spuria nel buffer GRBL (error:%d)\n", code);
+      sendErrorMsg("Scartati caratteri spuri nel buffer di GRBL prima del job (normale, il job prosegue)");
+      return;
+    }
     if (inJob) {
-      ackStreamLine();
       stream.paused = true;              // auto-pausa: le righe già in GRBL proseguono
       stream.lastError = code;
       stream.errLine   = stream.acked;
+      stream.errText   = errTxt;
+      DBG.printf("error:%d riga %d: %s\n", code, stream.acked, errTxt.c_str());
       broadcastProgress(true);
     }
     JsonDocument doc;
     doc["type"] = "error"; doc["code"] = code;
-    if (inJob) doc["lineNo"] = stream.acked;
+    if (inJob) { doc["lineNo"] = stream.acked; doc["text"] = errTxt; }
     broadcastJson(doc);
     return;
   }
@@ -588,6 +616,7 @@ void loopStream() {
     sendCmd(stream.nextLine);
     stream.txInFlight += lineBytes;
     stream.pendingLen.push_back(lineBytes);
+    stream.pendingTxt.push_back(stream.nextLine);
     stream.sent++;
     stream.nextLine = "";
   }
@@ -607,7 +636,10 @@ void streamReset() {
   stream.running = stream.paused = stream.eof = false;
   stream.sent = stream.acked = stream.txInFlight = 0;
   stream.lastError = stream.errLine = 0;
+  stream.errText = "";
+  stream.flushAcks = 0;
   stream.pendingLen.clear();
+  stream.pendingTxt.clear();
   stream.nextLine = "";
 }
 
@@ -691,6 +723,7 @@ void broadcastProgress(bool force) {
   doc["total"]   = stream.total;
   doc["lastError"] = stream.lastError;
   doc["errLine"]   = stream.errLine;
+  doc["errText"]   = stream.errText;
   broadcastJson(doc);
 }
 
@@ -719,7 +752,7 @@ String buildStatusJson() {
   JsonObject st = doc["stream"].to<JsonObject>();
   st["running"] = stream.running; st["paused"] = stream.paused;
   st["sent"] = stream.sent; st["acked"] = stream.acked; st["total"] = stream.total;
-  st["lastError"] = stream.lastError; st["errLine"] = stream.errLine;
+  st["lastError"] = stream.lastError; st["errLine"] = stream.errLine; st["errText"] = stream.errText;
   doc["rx_age"] = (uint32_t)(millis() - grblSt.lastRxMs);
   String out;
   serializeJson(doc, out);

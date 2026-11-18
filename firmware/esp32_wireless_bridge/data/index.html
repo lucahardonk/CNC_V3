@@ -638,7 +638,7 @@ function onMsg(m) {
   switch(m.type) {
     case 'status':       updStatus(m); break;
     case 'ok':           clog('← ok','ok'); break;
-    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga '+m.lineNo+')':'')+' — '+errTxt(m.code),'er');
+    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga G-code '+m.lineNo+(m.text?': '+m.text:'')+')':'')+' — '+errTxt(m.code),'er');
                          toast('Errore '+m.code+': '+errTxt(m.code),'er'); break;
     case 'alarm':        clog('⚠ ALARM:'+m.code+' — '+almTxt(m.code),'er'); toast('ALARM '+m.code+': '+almTxt(m.code)); break;
     case 'raw':          clog('← '+m.line,'rx'); break;
@@ -654,7 +654,7 @@ function onMsg(m) {
       break;
     case 'stream_progress':
       syncStreamUi({running:m.running, paused:m.paused, sent:m.sent, acked:m.acked,
-                    total:m.total, lastError:m.lastError||0, errLine:m.errLine||0});
+                    total:m.total, lastError:m.lastError||0, errLine:m.errLine||0, errText:m.errText||''});
       break;
     case 'stream_done':
       stDone = true;
@@ -720,8 +720,11 @@ function syncStreamUi(st) {
   if (!run) { box.style.display = 'none'; return; }
   box.style.display = '';
   if (pau && st.lastError) {
-    tx.innerHTML = '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga '+st.errLine+') — '+
-      errTxt(st.lastError)+'. Correggi e premi Riprendi o Stop.';
+    const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    tx.innerHTML = '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga G-code '+st.errLine+
+      (st.errText ? ': <code>'+esc(st.errText)+'</code>' : '')+') — '+
+      errTxt(st.lastError)+'. Correggi e premi Riprendi o Stop.'+
+      '<br><small>Il numero conta solo le righe di G-code (commenti esclusi).</small>';
     box.style.borderColor = 'var(--er, #f85149)';
   } else if (pau) {
     tx.textContent = '⏸ In pausa — premi Riprendi o Stop';
