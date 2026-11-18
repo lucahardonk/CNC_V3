@@ -564,7 +564,7 @@ function connectWS() {
   ws.onopen = () => {
     state.connected = true;
     updConn(true);
-    clog('Connesso a GRBL-Remote', 'ok');
+    clog('Connesso al bridge WiFi', 'ok');
   };
   ws.onclose = () => {
     state.connected = false;
@@ -607,7 +607,6 @@ function onMsg(m) {
     case 'welcome':      clog('← '+m.version,'ok'); break;
     case 'setting':      parseSetting(m.raw); clog('← '+m.raw,'rx'); break;
     case 'file_ready':
-      gcLines.length = 0;
       g('si').textContent = m.lines + ' linee caricate';
       g('bpl').disabled = false;
       g('bpa').disabled = true;
@@ -615,10 +614,12 @@ function onMsg(m) {
       break;
     case 'stream_progress':
       updProg(m.sent, m.acked, m.total);
-      state.stream = {running:true, paused:false, sent:m.sent, acked:m.acked, total:m.total};
+      state.stream = {running:m.running, paused:m.paused, sent:m.sent, acked:m.acked, total:m.total};
+      if (m.running) { g('bpl').disabled = true; g('bpa').disabled = false; }
       break;
     case 'stream_done':
       updProg(m.total, m.total, m.total);
+      g('bpl').disabled = false;
       clog('✅ Job completato ('+m.total+' linee)','ok');
       toast('Job completato!');
       g('bpa').disabled = true;
@@ -627,7 +628,7 @@ function onMsg(m) {
       clog('⏹ Streaming interrotto','wn');
       updProg(0,0,0);
       g('bpa').disabled = true;
-      g('bpl').disabled = gcLines.length === 0;
+      g('bpl').disabled = false;          // il file resta sull'ESP
       break;
     case 'error_msg':
       clog('⚠ '+m.msg,'er'); toast(m.msg); break;
@@ -745,6 +746,7 @@ function uploadGc(name, text) {
   fetch('/api/upload', {method:'POST', body:fd})
     .then(r => r.json())
     .then(j => {
+      if (!j.ok) { clog('⚠ '+(j.msg||'Upload rifiutato'),'er'); toast(j.msg||'Upload rifiutato'); return; }
       clog('File pronto: '+j.lines+' linee', 'ok');
       g('si').textContent = j.lines+' linee — '+name;
       g('bpl').disabled = false;
