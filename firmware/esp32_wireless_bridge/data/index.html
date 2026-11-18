@@ -24,8 +24,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 #hdr{background:var(--s1);border-bottom:1px solid var(--s3);display:flex;
   align-items:center;gap:10px;padding:0 12px;flex-shrink:0}
 #hdr h1{font-size:14px;font-weight:700;color:var(--bl)}
-#grid{display:grid;grid-template-columns:258px 1fr 272px;gap:4px;padding:4px;
+#grid{display:grid;grid-template-columns:var(--cw-l,258px) 4px 1fr 4px var(--cw-r,272px);padding:4px;
   overflow:hidden;min-height:0}
+.col-div{cursor:col-resize;background:transparent;border-radius:2px;transition:background .15s;user-select:none}
+.col-div:hover,.col-div.cdrag{background:#1f6feb44}
+/* E-STOP */
+#estop{font-size:13px;font-weight:900;padding:5px 18px;background:#7b1c1c;border:2px solid var(--rl);
+  border-radius:5px;color:#fff;cursor:pointer;letter-spacing:.06em;box-shadow:0 0 10px #f8514955;
+  font-family:var(--mono);user-select:none;flex-shrink:0}
+#estop:hover{background:var(--red);box-shadow:0 0 16px #f8514999}
+#estop:active{transform:scale(.96);background:var(--rl)}
 /* ══ Panel ═════════════════════════════════════════════════════════════════ */
 .pnl{background:var(--s1);border:1px solid var(--s3);border-radius:var(--r);
   display:flex;flex-direction:column;overflow:hidden;min-height:0}
@@ -169,6 +177,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 /* Mobile */
 @media(max-width:900px){
   #grid{grid-template-columns:1fr;overflow-y:auto}
+  .col-div{display:none}
   html,body{overflow:auto;height:auto}
   #app{height:auto;overflow:auto}
 }
@@ -184,6 +193,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   <span style="color:var(--muted);font-size:10px">GRBL v1.1</span>
   <span id="sb">—</span>
   <div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-left:auto">
+    <button id="estop" onclick="emergencyStop()" title="Feed Hold — arresta il movimento in sicurezza">🛑 E-STOP</button>
     <div id="ws-dot"></div>
     <span id="ws-lbl">Disconnesso</span>
   </div>
@@ -292,6 +302,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   </div>
 
 </div><!-- /col-l -->
+<div class="col-div" id="cdiv1"></div>
 
 <!-- ═══ COL CENTRALE ════════════════════════════════════════════════════════ -->
 <div id="col-c">
@@ -333,7 +344,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
     <!-- G-code -->
     <div class="tp ac" id="tgc">
       <div id="drop" onclick="document.getElementById('fi').click()"
-        ondragover="ev.preventDefault();this.classList.add('ov')"
+        ondragover="event.preventDefault();this.classList.add('ov')"
         ondragleave="this.classList.remove('ov')"
         ondrop="dropGc(event)">
         <input type="file" id="fi" accept=".nc,.gcode,.gc,.cnc,.txt,.ngc"
@@ -399,6 +410,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   </div>
 
 </div><!-- /col-c -->
+<div class="col-div" id="cdiv2"></div>
 
 <!-- ═══ COL DESTRA ══════════════════════════════════════════════════════════ -->
 <div id="col-r">
@@ -510,6 +522,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
     </div>
   </div>
 
+  <!-- Gamepad -->
+  <div class="pnl" style="flex:0 0 auto" id="gppnl">
+    <div class="pnl-t">🎮 Gamepad
+      <span id="gpst" style="margin-left:auto;font-size:9px;color:var(--muted)">Disconnesso</span>
+    </div>
+    <div class="pnl-b" style="font-size:9px;line-height:1.65;padding:7px">
+      <div style="color:var(--muted)">Mappa T-29 / PS4 (Gamepad API):</div>
+      <div>Stick sx → Jog XY &nbsp; R1/L1 → Z+/Z−</div>
+      <div>○ → Feed Hold &nbsp; △ → Cycle Start</div>
+      <div>D-pad → Jog singolo &nbsp; □/× → Step −/+</div>
+      <div id="gphi" style="color:var(--ol);margin-top:5px">Accoppia via BT del SO, poi premi un tasto sul controller.</div>
+    </div>
+  </div>
+
 </div><!-- /col-r -->
 </div><!-- /grid -->
 </div><!-- /app -->
@@ -587,6 +613,8 @@ function sc(cmd) {
   send({type:'cmd', cmd});
   clog('→ ' + cmd, 'tx');
 }
+
+function emergencyStop(){ rt(0x21); clog('⚠ E-STOP (Feed Hold)','er'); toast('E-STOP attivato'); }
 
 function rt(code) {
   // Real-time (1 byte): inviato come {type:'rt'} → il firmware usa sendRaw()
@@ -969,7 +997,7 @@ const viewer = (() => {
     blender:  {name:'Sinistro/Destro', hint:'Sinistro = Orbita · Destro = Pan · Shift+sinistro = Pan · Rotella = Zoom',
                map:{0:{'':'orbit','shift':'pan','ctrl':'zoom'}, 2:{'':'pan'}, 1:{'':'pan','shift':'orbit'}}}
   };
-  let opt = {preset:'fusion', zoomCursor:true, invZoom:false};
+  let opt = {preset:'solidworks', zoomCursor:true, invZoom:false};
   try { Object.assign(opt, JSON.parse(localStorage.getItem('cncViewOpt')||'{}')); } catch(e) {}
   if (!PRESETS[opt.preset]) opt.preset = 'fusion';
   function saveOpt(){ try{localStorage.setItem('cncViewOpt',JSON.stringify(opt));}catch(e){} }
@@ -1329,6 +1357,64 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ═══ Gamepad (PS4 / T-29) ═══
+const GPD={idx:-1,btn:Array(20).fill(false),wasMoving:false};
+const GPMAP={CIRCLE:1,TRIANGLE:3,SQUARE:2,CROSS:0,L1:4,R1:5,SHARE:8,DU:12,DD:13,DL:14,DR:15};
+function gpUpd(){const el=g('gpst'),hi=g('gphi');if(!el)return;
+  el.textContent=GPD.idx>=0?'✅ Connesso':'Disconnesso';
+  el.style.color=GPD.idx>=0?'var(--gl)':'var(--muted)';
+  if(hi)hi.style.display=GPD.idx>=0?'none':'block';}
+window.addEventListener('gamepadconnected',e=>{GPD.idx=e.gamepad.index;clog('🎮 Gamepad: '+e.gamepad.id,'ok');toast('Gamepad connesso!');gpUpd();});
+window.addEventListener('gamepaddisconnected',e=>{if(e.gamepad.index===GPD.idx){GPD.idx=-1;clog('🎮 Gamepad disconnesso','wn');gpUpd();}});
+function pollGP(){
+  if(GPD.idx<0)return;
+  const gp=navigator.getGamepads()[GPD.idx];if(!gp)return;
+  const ax=gp.axes,bt=gp.buttons;
+  const DZ=0.25;
+  const lx=Math.abs(ax[0])>DZ?ax[0]:0;
+  const ly=Math.abs(ax[1])>DZ?ax[1]:0;
+  const rz=Math.abs(ax[3])>DZ?ax[3]:0;
+  const f=parseFloat(g('jf').value)||1000;
+  if(lx||ly||rz){
+    let axes='';
+    if(lx)axes+='X'+(lx*jogStep).toFixed(3)+' ';
+    if(ly)axes+='Y'+(-ly*jogStep).toFixed(3)+' ';
+    if(rz)axes+='Z'+(-rz*jogStep).toFixed(3)+' ';
+    send({type:'jog',axes:axes.trim(),feed:f});
+  } else if(GPD.wasMoving){send({type:'jog_cancel'});GPD.wasMoving=false;}
+  GPD.wasMoving=!!(lx||ly||rz);
+  const prev=GPD.btn;
+  const pressed=i=>bt[i]?.pressed&&!prev[i];
+  if(pressed(GPMAP.CIRCLE)){rt(0x21);clog('🎮 Feed Hold','wn');}
+  if(pressed(GPMAP.TRIANGLE)){rt(0x7E);clog('🎮 Cycle Start','ok');}
+  if(pressed(GPMAP.SHARE)){rt(0x18);clog('🎮 Reset','wn');}
+  if(pressed(GPMAP.DU))jog('Y1'); if(pressed(GPMAP.DD))jog('Y-1');
+  if(pressed(GPMAP.DL))jog('X-1');if(pressed(GPMAP.DR))jog('X1');
+  if(pressed(GPMAP.R1))jog('Z1'); if(pressed(GPMAP.L1))jog('Z-1');
+  const steps=[.01,.1,1,5,10,50];
+  if(pressed(GPMAP.SQUARE)){const i=steps.indexOf(jogStep);if(i>0)ss(steps[i-1]);}
+  if(pressed(GPMAP.CROSS)){const i=steps.indexOf(jogStep);if(i<steps.length-1)ss(steps[i+1]);}
+  GPD.btn=bt.map(b=>b.pressed);
+}
+setInterval(pollGP,100);
+
+// ═══ Divisori colonne ridimensionabili ═══
+function initDividers(){
+  const grid=g('grid');
+  function mk(id,side){
+    g(id).addEventListener('mousedown',e=>{
+      e.preventDefault();g(id).classList.add('cdrag');
+      const st=getComputedStyle(grid).gridTemplateColumns.split(' ');
+      const startX=e.clientX, startPx=parseFloat(side==='l'?st[0]:st[4]);
+      const mv=e=>{const dx=e.clientX-startX; const np=Math.max(160,Math.min(600,startPx+(side==='l'?dx:-dx)));
+        grid.style.setProperty(side==='l'?'--cw-l':'--cw-r',np+'px');};
+      const up=()=>{g(id).classList.remove('cdrag');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);};
+      window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up);
+    });
+  }
+  mk('cdiv1','l'); mk('cdiv2','r');
+}
+
 // ═══ Significato errori/allarmi GRBL ═══
 const GRBL_ERR={1:'G-code: lettera senza numero',2:'formato numero non valido',3:'comando $ non riconosciuto',4:'valore negativo non ammesso',5:'homing non abilitato ($22=0)',6:'step pulse minimo < 3 µs',7:'lettura EEPROM fallita (ripristinati i default)',8:'comando $ consentito solo a macchina ferma (Idle)',9:'G-code bloccato durante allarme o jog (usa $X)',10:'soft limit richiede homing abilitato',11:'riga troppo lunga',12:'step rate $ troppo alto',13:'porta di sicurezza aperta',14:'riga di startup/build info troppo lunga',15:'target del jog oltre la corsa macchina',16:'comando jog non valido',17:'laser mode richiede PWM',20:'comando G-code non supportato o non valido',21:'conflitto di gruppo modale G-code',22:'feed rate non impostato',23:'il comando richiede un valore intero',24:'due comandi usano entrambi assi',25:'parola G-code ripetuta nella riga',26:'assi mancanti nel comando',27:'numero di riga non valido',28:'manca un valore (P/L...)',29:'G59.x non supportato',30:'G53 richiede G0 o G1',31:'assi presenti ma non necessari',32:'G2/G3 richiede almeno un asse',33:'target del movimento non valido',34:'errore raggio arco',35:'G2/G3 senza I/J/K',36:'parole inutilizzate nella riga',37:'errore offset G43.1',38:'numero utensile troppo alto'};
 const GRBL_ALM={1:'finecorsa hard attivato',2:'soft limit: movimento oltre la corsa',3:'reset durante il movimento: posizione persa, rifai homing',4:'probe: stato iniziale non corretto',5:'probe: nessun contatto',6:'homing fallito: reset durante il ciclo',7:'homing fallito: porta aperta',8:'homing fallito: pull-off non riuscito',9:'homing fallito: finecorsa non trovato'};
@@ -1340,6 +1426,7 @@ function almTxt(c){return GRBL_ALM[parseInt(c)]||'codice sconosciuto';}
 // ═══════════════════════════════════════════════════════════════════════════
 window.addEventListener('load', () => {
   connectWS();
+  initDividers();
   // Listener enter per MDI
   g('mdi').addEventListener('keydown', e => { if(e.key==='Enter') sendMDI(); });
 });
