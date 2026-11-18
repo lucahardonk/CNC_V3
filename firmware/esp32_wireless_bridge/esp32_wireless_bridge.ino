@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  esp32_wireless_bridge v2.0 — NodeMCU 1.0 (ESP8266 / ESP-12E)
+//  esp32_wireless_bridge v2.1 — NodeMCU 1.0 (ESP8266 / ESP-12E)
 //  Bridge WiFi + interfaccia web completa per GRBL 1.1h su Arduino Uno
 //
 //  Librerie (Library Manager):
@@ -118,7 +118,7 @@ void setup() {
   // Banner sulla USB prima dello swap (visibile nel Monitor Seriale)
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\n=== esp32_wireless_bridge v2.0 (ESP8266) ==="));
+  Serial.println(F("\n=== esp32_wireless_bridge v2.1 (ESP8266) ==="));
   Serial.println(F("RX GRBL = D7 (GPIO13, UART hardware)  TX GRBL = D5 (GPIO14)"));
   Serial.println(F("Da qui in poi la USB non riceve piu' log (vedi console web)."));
   Serial.flush();

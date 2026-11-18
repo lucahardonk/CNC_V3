@@ -83,22 +83,17 @@ Se modifichi `data/index.html`: `python3 tools/embed_html.py` e ricarica il firm
 - `[` e `]`: cambia lo step (0.01 → 50 mm)
 - Spazio: Feed Hold | `~`: Cycle Start | Ctrl+R: Reset
 
-### Gamepad PS4 / T-29
-Collega il controller (USB o Bluetooth) al dispositivo che apre la pagina.
-Funziona con la **Gamepad API** del browser (Chrome/Edge consigliati): non serve hardware aggiuntivo.
+### Visualizzatore 3D (stile CAD)
+- Pulsante **⚙ Mouse** nella barra del visualizzatore: scegli il preset (salvato nel browser)
+  - **Fusion 360**: centrale = pan, Shift+centrale = ruota, Ctrl+centrale = zoom
+  - **SolidWorks**: centrale = ruota, Ctrl+centrale = pan, Shift+centrale = zoom
+  - **Sinistro/Destro**: sinistro = ruota, destro (o Shift+sinistro) = pan
+- Rotella = zoom (opzioni "Zoom verso il cursore" e "Inverti rotella"), doppio clic = adatta
+- Touch: 1 dito ruota, 2 dita pan/pinch
 
-| Controllo | Azione |
-|---|---|
-| Stick sinistro | Jog XY continuo proporzionale |
-| R2 / L2 | Jog Z+ / Z− |
-| D-pad | Jog XY a step fisso |
-| ✕ | Stop jog |
-| ○ | Feed Hold `!` |
-| △ | Cycle Start `~` |
-| □ | Zero X+Y+Z |
-| L1 / R1 | Step più piccolo / più grande |
-| OPTIONS | Home `$H` |
-| SHARE / L3 | Soft reset |
+### Errori e allarmi
+In console ogni `error:N` / `ALARM:N` di GRBL viene mostrato con il suo significato
+(es. `error:8 — comando $ consentito solo a macchina ferma (Idle)`).
 
 ### Job G-code
 1. Tab **G-code**: trascina il file `.nc/.gcode` o usa il selettore. Viene salvato sull'ESP
@@ -116,6 +111,10 @@ Funziona con la **Gamepad API** del browser (Chrome/Edge consigliati): non serve
 
 ---
 
+## Versioni
+- **v2.1**: rimosso il gamepad, visualizzatore 3D con mouse stile Fusion/SolidWorks, significato di errori/allarmi in console
+- **v2.0**: RX hardware su D7, interfaccia incorporata nel firmware
+
 ## Problemi comuni
 
 | Problema | Soluzione |
@@ -123,5 +122,4 @@ Funziona con la **Gamepad API** del browser (Chrome/Edge consigliati): non serve
 | Stato sempre *Disconnected* | Filo GRBL TX → HV2/LV2 → **D7**, GND comune, LV a 3,3 V e HV a 5 V |
 | GRBL non esegue i comandi | Filo D5 → LV1/HV1 → pin 0 dell'Uno; porta seriale dell'Uno chiusa sul PC |
 | L'ESP non parte con i fili collegati | Qualcosa è collegato a D8 (GPIO15) o D3/D4 a massa |
-| Gamepad non rilevato | Chrome/Edge; premi un tasto del gamepad dopo aver aperto la pagina |
 | Il baud va cambiato | In GRBL 1.1h si cambia solo ricompilando GRBL (`BAUD_RATE` in `grbl/config.h`), poi `GRBL_BAUD` in `config.h` |

@@ -142,9 +142,16 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 .ni{background:var(--s2);border:1px solid var(--s3);border-radius:3px;color:var(--text);
   padding:3px 5px;font-family:var(--mono);font-size:11px;width:100%;outline:none}
 .ni:focus{border-color:var(--bl)}
-/* Gamepad badge */
-#gp-badge{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px}
-#gp-dot{width:8px;height:8px;border-radius:50%;background:var(--s3)}
+/* Opzioni viewer */
+#vo-pnl{display:none;position:absolute;top:6px;right:6px;width:250px;background:var(--s2);
+  border:1px solid var(--s3);border-radius:6px;padding:10px;font-size:10px;z-index:5}
+#vo-pnl.show{display:block}
+#vo-pnl label{display:block;color:var(--muted);margin:4px 0 2px}
+#vo-pnl label.ck{display:flex;gap:6px;align-items:center;color:var(--text);margin:6px 0 0}
+#vo-pnl select{width:100%;background:var(--s1,#0d1117);color:var(--text);border:1px solid var(--s3);
+  border-radius:3px;padding:3px;font-size:11px}
+#vo-hint{color:var(--cl);margin-top:6px;line-height:1.4}
+#vo-hint2{color:var(--muted);margin-top:8px;line-height:1.4}
 /* WS dot */
 #ws-dot{width:8px;height:8px;border-radius:50%;background:var(--rl)}
 /* State badge */
@@ -159,11 +166,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 /* Scroll */
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px}
-/* Gamepad overlay */
-#gp-overlay{position:fixed;bottom:12px;left:12px;background:var(--s2);
-  border:1px solid var(--s3);border-radius:6px;padding:8px 12px;font-size:10px;
-  color:var(--muted);z-index:998;display:none}
-#gp-overlay.show{display:block}
 /* Mobile */
 @media(max-width:900px){
   #grid{grid-template-columns:1fr;overflow-y:auto}
@@ -181,11 +183,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   <h1>CNC Remote</h1>
   <span style="color:var(--muted);font-size:10px">GRBL v1.1</span>
   <span id="sb">—</span>
-  <div id="gp-badge" title="Gamepad PS4 / T-29">
-    <div id="gp-dot"></div>
-    <span id="gp-lbl">No Gamepad</span>
-  </div>
-  <div style="display:flex;align-items:center;gap:6px;font-size:10px">
+  <div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-left:auto">
     <div id="ws-dot"></div>
     <span id="ws-lbl">Disconnesso</span>
   </div>
@@ -309,9 +307,19 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
       <div style="flex:1"></div>
       <button class="vb" onclick="viewer.fit()">⊡ Fit</button>
       <button class="vb" onclick="viewer.reset()">↺</button>
+      <button class="vb" id="vo-btn" title="Opzioni mouse 3D" onclick="g('vo-pnl').classList.toggle('show')">⚙ Mouse</button>
       <span id="cpos" style="font-size:9px;color:var(--muted);margin-left:6px">—</span>
     </div>
-    <div id="vwrap"><canvas id="cv"></canvas></div>
+    <div id="vwrap"><canvas id="cv"></canvas>
+      <div id="vo-pnl">
+        <div style="font-weight:700;margin-bottom:6px">Controlli mouse 3D</div>
+        <label>Schema</label>
+        <select id="vo-preset"></select>
+        <div id="vo-hint"></div>
+        <label class="ck"><input type="checkbox" id="vo-zc"> Zoom verso il cursore</label>
+        <label class="ck"><input type="checkbox" id="vo-iz"> Inverti rotella</label>
+        <div id="vo-hint2">Doppio clic = adatta alla vista · Touch: 1 dito orbita, 2 dita pan/zoom</div>
+      </div></div>
   </div>
 
   <!-- G-code / MDI / Settings -->
@@ -397,7 +405,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 
   <!-- Jog -->
   <div class="pnl" style="flex:0 0 auto">
-    <div class="pnl-t">🕹 Jog <span id="gp-ind" style="font-size:9px;color:var(--cl);display:none">● Gamepad</span></div>
+    <div class="pnl-t">🕹 Jog</div>
     <div class="pnl-b" style="padding:8px">
       <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Step (mm):</div>
       <div class="steps" id="stps" style="margin-bottom:6px">
@@ -506,11 +514,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 </div><!-- /grid -->
 </div><!-- /app -->
 
-<!-- Gamepad overlay -->
-<div id="gp-overlay">
-  🎮 Gamepad attivo | L-Stick: XY jog | R2/L2: Z | △ Start | ○ Hold | ✕ Stop | □ Zero | L1/R1: Step
-</div>
-
 <div id="toast"></div>
 
 <script>
@@ -599,9 +602,9 @@ function onMsg(m) {
   switch(m.type) {
     case 'status':       updStatus(m); break;
     case 'ok':           clog('← ok','ok'); break;
-    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga '+m.lineNo+')':''),'er');
-                         toast('Errore GRBL '+m.code,'er'); break;
-    case 'alarm':        clog('⚠ ALARM:'+m.code,'er'); toast('ALARM '+m.code); break;
+    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga '+m.lineNo+')':'')+' — '+errTxt(m.code),'er');
+                         toast('Errore '+m.code+': '+errTxt(m.code),'er'); break;
+    case 'alarm':        clog('⚠ ALARM:'+m.code+' — '+almTxt(m.code),'er'); toast('ALARM '+m.code+': '+almTxt(m.code)); break;
     case 'raw':          clog('← '+m.line,'rx'); break;
     case 'info':         clog('← '+m.line,'rx'); break;
     case 'welcome':      clog('← '+m.version,'ok'); break;
@@ -941,16 +944,35 @@ document.querySelectorAll('.tab').forEach(tab => {
 const viewer = (() => {
   const cv = g('cv');
   const ctx = cv.getContext('2d');
-  let view = 'top';
   let paths = [];
   let tool = {x:0,y:0,z:0};
   let bbox = {x0:0,x1:300,y0:0,y1:200,z0:-80,z1:0};
-  let panX=0,panY=0,zoom=1,dragging=false,lmx=0,lmy=0;
+  // Camera ortografica: yaw (rotazione attorno a Z), el (elevazione: 0=orizzontale, 90=dall'alto)
+  let yaw = 0, el = 90, scale = 1, panX = 0, panY = 0;
+  let cx0 = 0, cy0 = 0, cz0 = 0;          // punto attorno a cui si ruota (centro modello)
+  let raf = 0;
+  const D2R = Math.PI/180;
 
   const C = {
-    G0:'#444',G1:'#17c0d0',G2:'#56d364',G3:'#56d364',
-    tool:'#ff7675',bg:'#0d1117',grid:'#1a2234',org:'#ff767555'
+    G0:'#555d6b',G1:'#17c0d0',G2:'#56d364',G3:'#56d364',
+    tool:'#ff7675',bg:'#0d1117',grid:'#1a2234',gridMaj:'#26324a',
+    ax:'#f85149',ay:'#3fb950',az:'#58a6ff',box:'#3b4a66'
   };
+
+  // ── Preset mouse (come i CAD) ───────────────────────────────────────────
+  // Per ogni preset: azione per [pulsante][modificatore] — modificatori: '', 'shift', 'ctrl'
+  const PRESETS = {
+    fusion:   {name:'Fusion 360',  hint:'Tasto centrale = Pan · Shift+centrale = Orbita · Rotella = Zoom',
+               map:{1:{'':'pan','shift':'orbit','ctrl':'zoom'}, 0:{'':'none'}, 2:{'':'none'}}},
+    solidworks:{name:'SolidWorks', hint:'Tasto centrale = Orbita · Ctrl+centrale = Pan · Shift+centrale = Zoom · Rotella = Zoom',
+               map:{1:{'':'orbit','ctrl':'pan','shift':'zoom'}, 0:{'':'none'}, 2:{'':'none'}}},
+    blender:  {name:'Sinistro/Destro', hint:'Sinistro = Orbita · Destro = Pan · Shift+sinistro = Pan · Rotella = Zoom',
+               map:{0:{'':'orbit','shift':'pan','ctrl':'zoom'}, 2:{'':'pan'}, 1:{'':'pan','shift':'orbit'}}}
+  };
+  let opt = {preset:'fusion', zoomCursor:true, invZoom:false};
+  try { Object.assign(opt, JSON.parse(localStorage.getItem('cncViewOpt')||'{}')); } catch(e) {}
+  if (!PRESETS[opt.preset]) opt.preset = 'fusion';
+  function saveOpt(){ try{localStorage.setItem('cncViewOpt',JSON.stringify(opt));}catch(e){} }
 
   function resize() {
     cv.width  = cv.offsetWidth;
@@ -958,84 +980,101 @@ const viewer = (() => {
     fit(); draw();
   }
 
+  // Proiezione: restituisce {sx, sy, d} (d = profondità, per eventuali usi)
   function proj(x,y,z) {
-    let px,py;
-    if (view==='top')       { px=x;  py=-y; }
-    else if (view==='front'){ px=x;  py=-z; }
-    else if (view==='side') { px=y;  py=-z; }
-    else { // iso
-      px = (x-y)*0.866;
-      py = (x+y)*0.5 - z;
-    }
-    return {sx: cv.width/2+panX+px*zoom, sy: cv.height/2+panY+py*zoom};
+    x -= cx0; y -= cy0; z -= cz0;
+    const cy = Math.cos(yaw*D2R), sy = Math.sin(yaw*D2R);
+    const ce = Math.cos(el*D2R),  se = Math.sin(el*D2R);
+    const xr = x*cy - y*sy;
+    const yr = x*sy + y*cy;
+    const up = z*ce + yr*se;
+    const d  = yr*ce - z*se;
+    return {sx: cv.width/2 + panX + xr*scale, sy: cv.height/2 + panY - up*scale, d};
+  }
+
+  function corners() {
+    const b = bbox, pts = [];
+    for (const x of [Math.min(b.x0,0),Math.max(b.x1,0)])
+      for (const y of [Math.min(b.y0,0),Math.max(b.y1,0)])
+        for (const z of [b.z0,b.z1]) pts.push([x,y,z]);
+    return pts;
   }
 
   function fit() {
-    if (!paths.length) {
-      zoom = Math.min(cv.width,cv.height)/(Math.max(bbox.x1,bbox.y1)*1.5||300);
-      panX=panY=0; return;
+    const b = bbox;
+    cx0 = (Math.min(b.x0,0)+Math.max(b.x1,0))/2;
+    cy0 = (Math.min(b.y0,0)+Math.max(b.y1,0))/2;
+    cz0 = (b.z0+b.z1)/2;
+    scale = 1; panX = panY = 0;
+    let mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity;
+    for (const p of corners()) {
+      const s = proj(p[0],p[1],p[2]);
+      mnx=Math.min(mnx,s.sx); mxx=Math.max(mxx,s.sx);
+      mny=Math.min(mny,s.sy); mxy=Math.max(mxy,s.sy);
     }
-    let mn=[Infinity,Infinity],mx=[-Infinity,-Infinity];
-    for(const p of paths) for(const pt of p.pts) {
-      const {sx,sy}=proj(pt.x,pt.y,pt.z);
-      if(sx<mn[0])mn[0]=sx; if(sx>mx[0])mx[0]=sx;
-      if(sy<mn[1])mn[1]=sy; if(sy>mx[1])mx[1]=sy;
-    }
-    if(!isFinite(mn[0])){zoom=1;panX=panY=0;return;}
-    const pad=28;
-    const rw=(cv.width-pad*2)/(mx[0]-mn[0]||1);
-    const rh=(cv.height-pad*2)/(mx[1]-mn[1]||1);
-    zoom=Math.min(rw,rh);
-    panX=-(mn[0]+(mx[0]-mn[0])/2-cv.width/2);
-    panY=-(mn[1]+(mx[1]-mn[1])/2-cv.height/2);
+    const pad = 40;
+    const w = (mxx-mnx)||1, h = (mxy-mny)||1;
+    scale = Math.max(0.01, Math.min((cv.width-pad*2)/w, (cv.height-pad*2)/h));
+    panX = panY = 0;
   }
 
-  function draw() {
-    ctx.fillStyle=C.bg; ctx.fillRect(0,0,cv.width,cv.height);
-    drawGrid(); drawPaths(); drawTool(); drawAxisLabels();
+  function schedule() { if (!raf) raf = requestAnimationFrame(()=>{raf=0; draw();}); }
+
+  function line(a,b) {
+    const p=proj(a[0],a[1],a[2]), q=proj(b[0],b[1],b[2]);
+    ctx.moveTo(p.sx,p.sy); ctx.lineTo(q.sx,q.sy);
+  }
+
+  function niceStep() {
+    const target = 60/scale;                 // ~60 px tra linee
+    const pow = Math.pow(10, Math.floor(Math.log10(target)));
+    for (const m of [1,2,5,10]) if (pow*m >= target) return pow*m;
+    return pow*10;
   }
 
   function drawGrid() {
-    const step=10;
-    ctx.strokeStyle=C.grid; ctx.lineWidth=0.5;
-    // Origine
-    const o=proj(0,0,0);
-    ctx.strokeStyle=C.org; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(o.sx-12,o.sy); ctx.lineTo(o.sx+12,o.sy);
-    ctx.moveTo(o.sx,o.sy-12); ctx.lineTo(o.sx,o.sy+12); ctx.stroke();
-    // Griglia
-    ctx.strokeStyle=C.grid; ctx.lineWidth=0.4;
-    const ranges = {
-      top:  [[bbox.x0,bbox.x1],[bbox.y0,bbox.y1]],
-      front:[[bbox.x0,bbox.x1],[bbox.z0,bbox.z1]],
-      side: [[bbox.y0,bbox.y1],[bbox.z0,bbox.z1]],
-      iso:  [[bbox.x0,bbox.x1],[bbox.y0,bbox.y1]]
-    }[view];
-    if (!ranges) return;
-    for(let gx=Math.ceil(ranges[0][0]/step)*step; gx<=ranges[0][1]; gx+=step) {
+    const step = niceStep();
+    const b = bbox;
+    const x0 = Math.floor((Math.min(b.x0,0)-step)/step)*step, x1 = Math.ceil((Math.max(b.x1,0)+step)/step)*step;
+    const y0 = Math.floor((Math.min(b.y0,0)-step)/step)*step, y1 = Math.ceil((Math.max(b.y1,0)+step)/step)*step;
+    ctx.lineWidth = 0.6;
+    ctx.strokeStyle = C.grid;
+    ctx.beginPath();
+    for (let x=x0; x<=x1+1e-9; x+=step) line([x,y0,0],[x,y1,0]);
+    for (let y=y0; y<=y1+1e-9; y+=step) line([x0,y,0],[x1,y,0]);
+    ctx.stroke();
+    // Box del lavoro (bbox del G-code)
+    if (paths.length) {
+      ctx.strokeStyle = C.box; ctx.lineWidth = 0.8; ctx.setLineDash([3,3]);
       ctx.beginPath();
-      const a=view==='top'?proj(gx,ranges[1][0],0):view==='front'?proj(gx,0,ranges[1][0]):proj(0,gx,ranges[1][0]);
-      const b=view==='top'?proj(gx,ranges[1][1],0):view==='front'?proj(gx,0,ranges[1][1]):proj(0,gx,ranges[1][1]);
-      ctx.moveTo(a.sx,a.sy); ctx.lineTo(b.sx,b.sy); ctx.stroke();
+      const X=[b.x0,b.x1],Y=[b.y0,b.y1],Z=[b.z0,b.z1];
+      for (const z of Z){ line([X[0],Y[0],z],[X[1],Y[0],z]); line([X[1],Y[0],z],[X[1],Y[1],z]);
+                          line([X[1],Y[1],z],[X[0],Y[1],z]); line([X[0],Y[1],z],[X[0],Y[0],z]); }
+      for (const x of X) for (const y of Y) line([x,y,Z[0]],[x,y,Z[1]]);
+      ctx.stroke(); ctx.setLineDash([]);
     }
-    for(let gy=Math.ceil(ranges[1][0]/step)*step; gy<=ranges[1][1]; gy+=step) {
-      ctx.beginPath();
-      const a=view==='top'?proj(ranges[0][0],gy,0):view==='front'?proj(ranges[0][0],0,gy):proj(0,ranges[0][0],gy);
-      const b=view==='top'?proj(ranges[0][1],gy,0):view==='front'?proj(ranges[0][1],0,gy):proj(0,ranges[0][1],gy);
-      ctx.moveTo(a.sx,a.sy); ctx.lineTo(b.sx,b.sy); ctx.stroke();
-    }
+    // Assi origine
+    const L = Math.max(step*1.5, 10);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle=C.ax; ctx.beginPath(); line([0,0,0],[L,0,0]); ctx.stroke();
+    ctx.strokeStyle=C.ay; ctx.beginPath(); line([0,0,0],[0,L,0]); ctx.stroke();
+    ctx.strokeStyle=C.az; ctx.beginPath(); line([0,0,0],[0,0,L]); ctx.stroke();
+    ctx.font='bold 10px monospace';
+    let p=proj(L,0,0); ctx.fillStyle=C.ax; ctx.fillText('X',p.sx+4,p.sy-4);
+    p=proj(0,L,0);     ctx.fillStyle=C.ay; ctx.fillText('Y',p.sx+4,p.sy-4);
+    p=proj(0,0,L);     ctx.fillStyle=C.az; ctx.fillText('Z',p.sx+4,p.sy-4);
   }
 
   function drawPaths() {
-    for(const p of paths) {
-      if(p.pts.length<2) continue;
+    for (const p of paths) {
+      if (p.pts.length<2) continue;
       ctx.beginPath();
       ctx.strokeStyle = C[p.type]||C.G1;
       ctx.lineWidth   = p.type==='G0'?.7:1.2;
       ctx.setLineDash(p.type==='G0'?[4,4]:[]);
       const s0=proj(p.pts[0].x,p.pts[0].y,p.pts[0].z);
       ctx.moveTo(s0.sx,s0.sy);
-      for(let i=1;i<p.pts.length;i++){
+      for (let i=1;i<p.pts.length;i++) {
         const s=proj(p.pts[i].x,p.pts[i].y,p.pts[i].z);
         ctx.lineTo(s.sx,s.sy);
       }
@@ -1044,22 +1083,26 @@ const viewer = (() => {
   }
 
   function drawTool() {
-    const s=proj(tool.x,tool.y,tool.z);
-    const r=9;
+    const s = proj(tool.x,tool.y,tool.z);
+    const g0 = proj(tool.x,tool.y,0);
+    // linea di quota verso il piano Z=0
+    ctx.strokeStyle = C.tool+'66'; ctx.lineWidth = 1; ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(s.sx,s.sy); ctx.lineTo(g0.sx,g0.sy); ctx.stroke(); ctx.setLineDash([]);
+    const r = 8;
     ctx.beginPath(); ctx.arc(s.sx,s.sy,r,0,Math.PI*2);
-    ctx.fillStyle=C.tool+'44'; ctx.fill();
-    ctx.strokeStyle=C.tool; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle = C.tool+'55'; ctx.fill();
+    ctx.strokeStyle = C.tool; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(s.sx-r*2,s.sy); ctx.lineTo(s.sx+r*2,s.sy);
-    ctx.moveTo(s.sx,s.sy-r*2); ctx.lineTo(s.sx,s.sy+r*2);
+    ctx.moveTo(s.sx-r*1.8,s.sy); ctx.lineTo(s.sx+r*1.8,s.sy);
+    ctx.moveTo(s.sx,s.sy-r*1.8); ctx.lineTo(s.sx,s.sy+r*1.8);
     ctx.stroke();
   }
 
-  function drawAxisLabels() {
-    ctx.font='10px monospace';
-    const lbl={top:['X →','Y ↑'],front:['X →','Z ↑'],side:['Y →','Z ↑'],iso:['ISO','']}[view];
-    ctx.fillStyle='#ff7675'; ctx.fillText(lbl[0],8,cv.height-18);
-    ctx.fillStyle='#74b9ff'; ctx.fillText(lbl[1],8,cv.height-6);
+  function draw() {
+    ctx.fillStyle=C.bg; ctx.fillRect(0,0,cv.width,cv.height);
+    drawGrid(); drawPaths(); drawTool();
+    ctx.font='10px monospace'; ctx.fillStyle='#6e7681';
+    ctx.fillText(PRESETS[opt.preset].name+' · '+(Math.round(el)===90?'Alto':'3D'), 8, cv.height-8);
   }
 
   // ── G-code parser (G0,G1,G2,G3 con archi) ───────────────────────────────
@@ -1131,51 +1174,125 @@ const viewer = (() => {
     fit(); draw();
   }
 
-  // Mouse / touch
-  cv.addEventListener('mousedown', e=>{dragging=true;lmx=e.clientX;lmy=e.clientY;});
-  cv.addEventListener('mousemove', e=>{
-    if(dragging){panX+=e.clientX-lmx;panY+=e.clientY-lmy;lmx=e.clientX;lmy=e.clientY;draw();}
-    if(view==='top'){
-      const r=cv.getBoundingClientRect();
-      const wx=(e.clientX-r.left-cv.width/2-panX)/zoom;
-      const wy=-(e.clientY-r.top-cv.height/2-panY)/zoom;
-      g('cpos').textContent='X'+wx.toFixed(2)+' Y'+wy.toFixed(2);
-    }
-  });
-  cv.addEventListener('mouseup',()=>dragging=false);
-  cv.addEventListener('mouseleave',()=>dragging=false);
-  cv.addEventListener('wheel',e=>{e.preventDefault();zoom*=e.deltaY<0?1.12:.9;draw();},{passive:false});
+  // ── Interazione mouse ───────────────────────────────────────────────────
+  let drag = null;   // {action, lx, ly}
+  function modOf(e){ return e.shiftKey ? 'shift' : (e.ctrlKey||e.metaKey ? 'ctrl' : ''); }
 
-  let ld=0;
-  cv.addEventListener('touchstart',e=>{
-    if(e.touches.length===1){dragging=true;lmx=e.touches[0].clientX;lmy=e.touches[0].clientY;}
-    else if(e.touches.length===2) ld=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-  });
-  cv.addEventListener('touchmove',e=>{
-    e.preventDefault();
-    if(e.touches.length===1&&dragging){
-      panX+=e.touches[0].clientX-lmx;panY+=e.touches[0].clientY-lmy;
-      lmx=e.touches[0].clientX;lmy=e.touches[0].clientY;draw();
-    } else if(e.touches.length===2){
-      const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
-      zoom*=d/ld;ld=d;draw();
+  function doOrbit(dx,dy){
+    yaw -= dx*0.4;
+    el = Math.max(-90, Math.min(90, el + dy*0.4));
+  }
+  function doZoomAt(factor, mx, my){
+    const ns = Math.max(0.01, Math.min(scale*factor, 5000));
+    factor = ns/scale; scale = ns;
+    if (opt.zoomCursor) {
+      // mantiene fermo il punto sotto il cursore
+      const ox = mx - cv.width/2, oy = my - cv.height/2;
+      panX = ox - (ox - panX)*factor;
+      panY = oy - (oy - panY)*factor;
     }
+  }
+
+  cv.addEventListener('contextmenu', e=>e.preventDefault());
+  cv.addEventListener('mousedown', e=>{
+    const m = PRESETS[opt.preset].map[e.button];
+    if (!m) return;
+    const a = m[modOf(e)] || m[''] || 'none';
+    if (e.button===1) e.preventDefault();
+    if (a==='none') return;
+    drag = {action:a, lx:e.clientX, ly:e.clientY};
+  });
+  window.addEventListener('mousemove', e=>{
+    if (!drag) return;
+    const dx=e.clientX-drag.lx, dy=e.clientY-drag.ly;
+    drag.lx=e.clientX; drag.ly=e.clientY;
+    if (drag.action==='orbit') doOrbit(dx,dy);
+    else if (drag.action==='pan') { panX+=dx; panY+=dy; }
+    else if (drag.action==='zoom') {
+      const r=cv.getBoundingClientRect();
+      doZoomAt(Math.exp(-dy*0.01*(opt.invZoom?-1:1)), r.width/2, r.height/2);
+    }
+    schedule();
+  });
+  window.addEventListener('mouseup', ()=>{ drag=null; });
+  cv.addEventListener('mousemove', e=>{
+    // coordinate sotto il cursore sul piano Z=0 (ha senso in vista dall'alto)
+    if (Math.abs(el-90)<0.5) {
+      const r=cv.getBoundingClientRect();
+      const px=(e.clientX-r.left-cv.width/2-panX)/scale;
+      const py=-(e.clientY-r.top-cv.height/2-panY)/scale;
+      const cy=Math.cos(yaw*D2R), sy=Math.sin(yaw*D2R);
+      const wx = px*cy + py*sy + cx0, wy = -px*sy + py*cy + cy0;
+      g('cpos').textContent='X'+wx.toFixed(2)+' Y'+wy.toFixed(2);
+    } else g('cpos').textContent='—';
+  });
+  cv.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const r=cv.getBoundingClientRect();
+    const up = (e.deltaY<0) !== opt.invZoom;
+    doZoomAt(up?1.15:1/1.15, e.clientX-r.left, e.clientY-r.top);
+    schedule();
+  }, {passive:false});
+  cv.addEventListener('dblclick', ()=>{ fit(); draw(); });
+
+  // Touch: 1 dito = orbita, 2 dita = pan + pinch zoom
+  let tl = null;
+  cv.addEventListener('touchstart', e=>{
+    if (e.touches.length===1) tl={n:1,x:e.touches[0].clientX,y:e.touches[0].clientY};
+    else if (e.touches.length===2) {
+      const a=e.touches[0],b=e.touches[1];
+      tl={n:2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2};
+    }
+  },{passive:true});
+  cv.addEventListener('touchmove', e=>{
+    e.preventDefault();
+    if (!tl) return;
+    const r=cv.getBoundingClientRect();
+    if (e.touches.length===1 && tl.n===1) {
+      const t=e.touches[0]; doOrbit(t.clientX-tl.x, t.clientY-tl.y); tl.x=t.clientX; tl.y=t.clientY;
+    } else if (e.touches.length===2 && tl.n===2) {
+      const a=e.touches[0],b=e.touches[1];
+      const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+      const mx=(a.clientX+b.clientX)/2, my=(a.clientY+b.clientY)/2;
+      panX+=mx-tl.x; panY+=my-tl.y;
+      doZoomAt(d/tl.d, mx-r.left, my-r.top);
+      tl.d=d; tl.x=mx; tl.y=my;
+    }
+    schedule();
   },{passive:false});
-  cv.addEventListener('touchend',()=>dragging=false);
+  cv.addEventListener('touchend', ()=>{ tl=null; });
 
   new ResizeObserver(resize).observe(cv.parentElement);
 
+  // ── Pannello opzioni ────────────────────────────────────────────────────
+  function initOpts() {
+    const sel = g('vo-preset');
+    sel.innerHTML = Object.keys(PRESETS).map(k=>'<option value="'+k+'">'+PRESETS[k].name+'</option>').join('');
+    function refresh(){
+      sel.value = opt.preset;
+      g('vo-hint').textContent = PRESETS[opt.preset].hint;
+      g('vo-zc').checked = opt.zoomCursor;
+      g('vo-iz').checked = opt.invZoom;
+    }
+    sel.onchange = ()=>{ opt.preset=sel.value; saveOpt(); refresh(); draw(); };
+    g('vo-zc').onchange = e=>{ opt.zoomCursor=e.target.checked; saveOpt(); };
+    g('vo-iz').onchange = e=>{ opt.invZoom=e.target.checked; saveOpt(); };
+    refresh();
+  }
+  initOpts();
+
+  const VIEWS = {top:[0,90], front:[0,0], side:[-90,0], iso:[-45,35]};
   return {
     setView(v){
-      view=v;
+      [yaw,el] = VIEWS[v] || VIEWS.iso;
       ['vt','vf','vs','vi'].forEach(id=>g(id).classList.remove('ac'));
       g('v'+v[0]).classList.add('ac');
-      fit();draw();
+      fit(); draw();
     },
-    setTool(x,y,z){tool={x,y,z};draw();},
-    clearPath(){paths=[];draw();},
-    fit(){fit();draw();},
-    reset(){zoom=1;panX=0;panY=0;draw();},
+    setTool(x,y,z){ tool={x,y,z}; schedule(); },
+    clearPath(){ paths=[]; draw(); },
+    fit(){ fit(); draw(); },
+    reset(){ yaw=0; el=90; ['vt','vf','vs','vi'].forEach(id=>g(id).classList.remove('ac')); g('vt').classList.add('ac'); fit(); draw(); },
     parse:parseGc
   };
 })();
@@ -1212,120 +1329,17 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Gamepad API — PS4 / T-29 (compatibile XInput)
-// ═══════════════════════════════════════════════════════════════════════════
-let gp = null, gpActive = false;
-let gpJogTimer = null;
-// Deadzone per gli stick
-const DEAD = 0.15;
-// Mappa pulsanti PS4 / XInput standard
-const BTN = {
-  X:0, O:1, SQ:2, TRI:3,         // Cross, Circle, Square, Triangle
-  L1:4, R1:5, L2:6, R2:7,
-  SHARE:8, OPT:9,                  // Options / Start
-  L3:10, R3:11,
-  DUP:12, DDN:13, DL:14, DR:15,
-  PS:16
-};
-
-function deadzone(v) { return Math.abs(v) < DEAD ? 0 : v; }
-
-window.addEventListener('gamepadconnected', e => {
-  gp = e.gamepad;
-  gpActive = true;
-  g('gp-dot').style.background = 'var(--cl)';
-  g('gp-lbl').textContent = e.gamepad.id.substring(0,20);
-  g('gp-ind').style.display = 'inline';
-  g('gp-overlay').classList.add('show');
-  clog('🎮 Gamepad connesso: '+e.gamepad.id,'ok');
-  toast('Gamepad connesso!');
-  gpLoop();
-});
-window.addEventListener('gamepaddisconnected', () => {
-  gpActive = false;
-  g('gp-dot').style.background = 'var(--s3)';
-  g('gp-lbl').textContent = 'No Gamepad';
-  g('gp-ind').style.display = 'none';
-  g('gp-overlay').classList.remove('show');
-  clog('🎮 Gamepad disconnesso','wn');
-});
-
-let gpBtnPrev = Array(17).fill(false);
-
-function gpLoop() {
-  if (!gpActive) return;
-  const pads = navigator.getGamepads();
-  gp = pads[gp ? gp.index : 0];
-  if (!gp) { requestAnimationFrame(gpLoop); return; }
-
-  const ax = gp.axes;
-  const btn = gp.buttons;
-
-  // ── Stick sinistro → jog XY continuo (proporzionale) ─────────────────
-  const lx = deadzone(ax[0] || 0);
-  const ly = deadzone(ax[1] || 0);
-  // R2 (asse 5 su PS4) → Z+, L2 (asse 4) → Z−
-  const r2 = Math.max(0, (ax[5] !== undefined ? (ax[5]+1)/2 : (btn[BTN.R2]?.value||0)));
-  const l2 = Math.max(0, (ax[4] !== undefined ? (ax[4]+1)/2 : (btn[BTN.L2]?.value||0)));
-
-  const joyThresh = 0.15;
-  if (Math.abs(lx) > joyThresh || Math.abs(ly) > joyThresh || r2 > joyThresh || l2 > joyThresh) {
-    // Continua a mandare jog proporzionali al rate
-    const f = parseFloat(g('jf').value) || 1000;
-    let axes = '';
-    if (Math.abs(lx) > joyThresh) axes += 'X'+(lx*jogStep).toFixed(3)+' ';
-    if (Math.abs(ly) > joyThresh) axes += 'Y'+(-ly*jogStep).toFixed(3)+' ';
-    if (r2 > joyThresh)           axes += 'Z'+(r2*jogStep).toFixed(3)+' ';
-    if (l2 > joyThresh)           axes += 'Z'+(-l2*jogStep).toFixed(3)+' ';
-    if (axes.trim()) send({type:'jog', axes:axes.trim(), feed:f});
-  }
-
-  // ── D-pad → jog a step ─────────────────────────────────────────────────
-  function bp(i) { return btn[i]?.pressed && !gpBtnPrev[i]; }  // just pressed
-
-  if(bp(BTN.DR)) jog('X1');
-  if(bp(BTN.DL)) jog('X-1');
-  if(bp(BTN.DUP)) jog('Y1');
-  if(bp(BTN.DDN)) jog('Y-1');
-
-  // ── Pulsanti ───────────────────────────────────────────────────────────
-  if(bp(BTN.TRI))  rt(0x7E);                     // Triangle = Cycle Start ~
-  if(bp(BTN.O))    rt(0x21);                     // Circle = Feed Hold !
-  if(bp(BTN.X))    jogStop();                    // Cross = Stop jog
-  if(bp(BTN.SQ))   setZero('XYZ');              // Square = Zero all
-  if(bp(BTN.OPT))  sc('$H');                    // Options = Home
-  if(bp(BTN.SHARE))rt(0x18);                    // Share = Soft Reset
-  if(bp(BTN.L3))   rt(0x18);                    // L3 = Soft Reset
-
-  // R1/L1 → step size
-  if(bp(BTN.R1)){const steps=[.01,.1,1,5,10,50];const i=steps.indexOf(jogStep);if(i<steps.length-1)ss(steps[i+1]);}
-  if(bp(BTN.L1)){const steps=[.01,.1,1,5,10,50];const i=steps.indexOf(jogStep);if(i>0)ss(steps[i-1]);}
-
-  // Aggiorna stato precedente pulsanti
-  for(let i=0;i<gpBtnPrev.length;i++) gpBtnPrev[i]=btn[i]?.pressed||false;
-
-  requestAnimationFrame(gpLoop);
-}
+// ═══ Significato errori/allarmi GRBL ═══
+const GRBL_ERR={1:'G-code: lettera senza numero',2:'formato numero non valido',3:'comando $ non riconosciuto',4:'valore negativo non ammesso',5:'homing non abilitato ($22=0)',6:'step pulse minimo < 3 µs',7:'lettura EEPROM fallita (ripristinati i default)',8:'comando $ consentito solo a macchina ferma (Idle)',9:'G-code bloccato durante allarme o jog (usa $X)',10:'soft limit richiede homing abilitato',11:'riga troppo lunga',12:'step rate $ troppo alto',13:'porta di sicurezza aperta',14:'riga di startup/build info troppo lunga',15:'target del jog oltre la corsa macchina',16:'comando jog non valido',17:'laser mode richiede PWM',20:'comando G-code non supportato o non valido',21:'conflitto di gruppo modale G-code',22:'feed rate non impostato',23:'il comando richiede un valore intero',24:'due comandi usano entrambi assi',25:'parola G-code ripetuta nella riga',26:'assi mancanti nel comando',27:'numero di riga non valido',28:'manca un valore (P/L...)',29:'G59.x non supportato',30:'G53 richiede G0 o G1',31:'assi presenti ma non necessari',32:'G2/G3 richiede almeno un asse',33:'target del movimento non valido',34:'errore raggio arco',35:'G2/G3 senza I/J/K',36:'parole inutilizzate nella riga',37:'errore offset G43.1',38:'numero utensile troppo alto'};
+const GRBL_ALM={1:'finecorsa hard attivato',2:'soft limit: movimento oltre la corsa',3:'reset durante il movimento: posizione persa, rifai homing',4:'probe: stato iniziale non corretto',5:'probe: nessun contatto',6:'homing fallito: reset durante il ciclo',7:'homing fallito: porta aperta',8:'homing fallito: pull-off non riuscito',9:'homing fallito: finecorsa non trovato'};
+function errTxt(c){return GRBL_ERR[parseInt(c)]||'codice sconosciuto';}
+function almTxt(c){return GRBL_ALM[parseInt(c)]||'codice sconosciuto';}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Init
 // ═══════════════════════════════════════════════════════════════════════════
 window.addEventListener('load', () => {
   connectWS();
-  // Controlla se un gamepad è già connesso (pagina ricaricata)
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  for (const p of pads) {
-    if (p) {
-      gp = p; gpActive = true;
-      g('gp-dot').style.background='var(--cl)';
-      g('gp-lbl').textContent = p.id.substring(0,20);
-      g('gp-ind').style.display='inline';
-      g('gp-overlay').classList.add('show');
-      gpLoop();
-      break;
-    }
-  }
   // Listener enter per MDI
   g('mdi').addEventListener('keydown', e => { if(e.key==='Enter') sendMDI(); });
 });
