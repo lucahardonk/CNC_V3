@@ -110,6 +110,7 @@ backend/             FastAPI: routers/ (projects, layers, entities, tools, setti
                      services/ (grbl_service.py, gcode_generator.py)
 frontend/src/        pages/, components/ (cad, viewer3d, cutting, settings, dashboard, common), store/, services/
 data/                volume persistente
+firmware/            GRBL 1.1h (Arduino Uno) + firmware ESP8266 per il controllo wireless → firmware/README.md
 ```
 
 > La cartella `V2/` contiene materiale della versione precedente e non è usata da CNC V3.

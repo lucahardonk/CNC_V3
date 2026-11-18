@@ -1,0 +1,1332 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>CNC Remote — GRBL Bridge</title>
+<style>
+/* ══ Variabili ══════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#0d1117;--s1:#161b22;--s2:#21262d;--s3:#30363d;
+  --text:#c9d1d9;--muted:#6e7681;
+  --green:#2ea043;--gl:#3fb950;
+  --red:#da3633;--rl:#f85149;
+  --orange:#9e6a03;--ol:#d29922;
+  --blue:#1f6feb;--bl:#58a6ff;
+  --cyan:#0d7377;--cl:#17c0d0;
+  --r:6px;--mono:'JetBrains Mono','Fira Code',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:var(--mono);font-size:12px}
+/* ══ Layout ════════════════════════════════════════════════════════════════ */
+#app{display:grid;grid-template-rows:44px 1fr;height:100vh}
+#hdr{background:var(--s1);border-bottom:1px solid var(--s3);display:flex;
+  align-items:center;gap:10px;padding:0 12px;flex-shrink:0}
+#hdr h1{font-size:14px;font-weight:700;color:var(--bl)}
+#grid{display:grid;grid-template-columns:258px 1fr 272px;gap:4px;padding:4px;
+  overflow:hidden;min-height:0}
+/* ══ Panel ═════════════════════════════════════════════════════════════════ */
+.pnl{background:var(--s1);border:1px solid var(--s3);border-radius:var(--r);
+  display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.pnl-t{background:var(--s2);border-bottom:1px solid var(--s3);padding:5px 10px;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);display:flex;align-items:center;gap:6px;flex-shrink:0}
+.pnl-b{flex:1;overflow-y:auto;padding:8px;min-height:0}
+/* ══ Colonna sinistra ══════════════════════════════════════════════════════ */
+#col-l{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* DRO */
+.dro-ax{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+.dro-name{width:14px;font-size:11px;font-weight:700}
+.dro-val{flex:1;font-size:21px;font-weight:700;text-align:right;letter-spacing:-.03em;font-family:var(--mono)}
+.dro-unit{font-size:9px;color:var(--muted);width:18px}
+/* Pin LED */
+.pins{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
+.pin{display:flex;flex-direction:column;align-items:center;gap:2px;padding:5px 2px;
+  background:var(--s2);border:1px solid var(--s3);border-radius:4px}
+.led{width:9px;height:9px;border-radius:50%;background:var(--s3);transition:background .1s,box-shadow .1s}
+.led.on{background:var(--rl);box-shadow:0 0 5px var(--rl)}
+.led.on.prb{background:var(--cl);box-shadow:0 0 5px var(--cl)}
+.pname{font-size:9px;color:var(--muted)}
+/* Override */
+.ov-row{display:flex;align-items:center;gap:5px;margin-bottom:5px}
+.ov-lbl{width:52px;font-size:10px;color:var(--muted)}
+.ov-sl{flex:1;accent-color:var(--bl);height:3px}
+.ov-pct{width:34px;font-size:11px;text-align:right}
+.ov-b{padding:1px 4px;font-size:10px;cursor:pointer;background:var(--s3);
+  border:1px solid var(--s3);border-radius:3px;color:var(--text)}
+.ov-b:hover{background:var(--blue)}
+/* Console */
+#con{flex:1;overflow-y:auto;font-size:10px;line-height:1.55;padding:4px;min-height:0}
+.ll{display:flex;gap:5px}
+.ts{color:var(--muted);flex-shrink:0}
+.ok{color:var(--gl)}.er{color:var(--rl)}.tx{color:var(--bl)}
+.rx{color:var(--text)}.wn{color:var(--ol)}
+/* ══ Colonna centrale ══════════════════════════════════════════════════════ */
+#col-c{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* Viewer */
+#vpnl{flex:1;min-height:0}
+#vwrap{flex:1;overflow:hidden;position:relative;min-height:0;display:flex}
+#cv{width:100%;height:100%;cursor:crosshair;display:block}
+.vtb{display:flex;gap:3px;padding:5px 7px;border-bottom:1px solid var(--s3);
+  flex-wrap:wrap;align-items:center;flex-shrink:0}
+.vb{padding:3px 7px;font-size:10px;cursor:pointer;background:var(--s2);
+  border:1px solid var(--s3);border-radius:3px;color:var(--text);font-family:var(--mono)}
+.vb.ac{background:var(--blue);border-color:var(--bl);color:#fff}
+.vb:hover:not(.ac){background:var(--s3)}
+/* G-code / tabs centrali */
+#cpnl{flex:0 0 230px}
+.tabs{display:flex;border-bottom:1px solid var(--s3);padding:0 6px;flex-shrink:0}
+.tab{padding:5px 10px;font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.08em;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;
+  margin-bottom:-1px}
+.tab.ac{color:var(--bl);border-color:var(--bl)}
+.tp{display:none;overflow-y:auto;flex:1;padding:8px;min-height:0}
+.tp.ac{display:flex;flex-direction:column;gap:6px}
+/* Drop zone */
+#drop{border:2px dashed var(--s3);border-radius:4px;padding:10px;text-align:center;
+  cursor:pointer;font-size:11px;color:var(--muted);transition:border-color .2s}
+#drop.ov{border-color:var(--bl);color:var(--bl)}
+.prog{background:var(--s2);border-radius:3px;height:5px;overflow:hidden}
+.pb{height:100%;background:linear-gradient(90deg,var(--blue),var(--bl));transition:width .3s;width:0%}
+.si{display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
+/* G-code textarea */
+#gta{width:100%;height:80px;background:var(--s2);border:1px solid var(--s3);
+  border-radius:4px;color:var(--text);font-family:var(--mono);font-size:10px;
+  padding:5px;resize:none;outline:none}
+#gta:focus{border-color:var(--bl)}
+/* MDI */
+#mdi{width:100%;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  color:var(--text);padding:6px 8px;font-family:var(--mono);font-size:12px;outline:none}
+#mdi:focus{border-color:var(--bl)}
+/* Settings */
+.stbl{width:100%;border-collapse:collapse;font-size:11px}
+.stbl th,.stbl td{padding:3px 5px;border-bottom:1px solid var(--s3);text-align:left}
+.stbl th{color:var(--muted);font-weight:400;font-size:9px}
+.sval{background:var(--s2);border:1px solid var(--s3);border-radius:3px;
+  color:var(--text);font-family:var(--mono);font-size:11px;padding:2px 4px;width:70px}
+/* ══ Colonna destra ════════════════════════════════════════════════════════ */
+#col-r{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* Jog pad */
+.jpad{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);
+  gap:3px;aspect-ratio:1}
+.jb{display:flex;align-items:center;justify-content:center;font-size:14px;
+  cursor:pointer;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  user-select:none;transition:background .1s}
+.jb:hover{background:var(--blue)}.jb:active{background:var(--bl);color:#000}
+.jb.ctr{font-size:9px;color:var(--muted);cursor:default;background:transparent;border:none}
+.jz{display:flex;flex-direction:column;gap:3px}
+.jzb{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;
+  cursor:pointer;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  user-select:none}
+.jzb:hover{background:var(--blue)}
+/* Step */
+.steps{display:flex;gap:2px;flex-wrap:wrap}
+.sb{flex:1;min-width:30px;padding:3px 2px;text-align:center;font-size:10px;cursor:pointer;
+  background:var(--s2);border:1px solid var(--s3);border-radius:3px;font-family:var(--mono)}
+.sb.ac{background:var(--blue);border-color:var(--bl)}
+/* Buttons */
+.btn{padding:5px 9px;font-size:11px;font-family:var(--mono);cursor:pointer;
+  border-radius:4px;border:1px solid;text-align:center;user-select:none}
+.btn:hover{filter:brightness(1.15)}.btn:active{filter:brightness(.9)}
+.p{background:var(--blue);border-color:var(--bl);color:#fff}
+.g{background:var(--green);border-color:var(--gl);color:#fff}
+.d{background:var(--red);border-color:var(--rl);color:#fff}
+.w{background:var(--orange);border-color:var(--ol);color:#fff}
+.gh{background:var(--s2);border-color:var(--s3);color:var(--text)}
+.sm{padding:3px 7px;font-size:10px}
+.fw{width:100%}
+/* Macros grid */
+.mgr{display:grid;grid-template-columns:1fr 1fr;gap:3px}
+/* Numpad input */
+.ni{background:var(--s2);border:1px solid var(--s3);border-radius:3px;color:var(--text);
+  padding:3px 5px;font-family:var(--mono);font-size:11px;width:100%;outline:none}
+.ni:focus{border-color:var(--bl)}
+/* Gamepad badge */
+#gp-badge{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px}
+#gp-dot{width:8px;height:8px;border-radius:50%;background:var(--s3)}
+/* WS dot */
+#ws-dot{width:8px;height:8px;border-radius:50%;background:var(--rl)}
+/* State badge */
+#sb{padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--s3);
+  color:var(--muted);background:transparent}
+/* Toast */
+#toast{position:fixed;bottom:14px;right:14px;background:var(--s2);
+  border:1px solid var(--s3);border-radius:5px;padding:8px 14px;font-size:11px;
+  z-index:999;opacity:0;transition:opacity .25s;pointer-events:none}
+#toast.on{opacity:1}
+/* Scroll */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px}
+/* Gamepad overlay */
+#gp-overlay{position:fixed;bottom:12px;left:12px;background:var(--s2);
+  border:1px solid var(--s3);border-radius:6px;padding:8px 12px;font-size:10px;
+  color:var(--muted);z-index:998;display:none}
+#gp-overlay.show{display:block}
+/* Mobile */
+@media(max-width:900px){
+  #grid{grid-template-columns:1fr;overflow-y:auto}
+  html,body{overflow:auto;height:auto}
+  #app{height:auto;overflow:auto}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<div id="hdr">
+  <span>⚙</span>
+  <h1>CNC Remote</h1>
+  <span style="color:var(--muted);font-size:10px">GRBL v1.1</span>
+  <span id="sb">—</span>
+  <div id="gp-badge" title="Gamepad PS4 / T-29">
+    <div id="gp-dot"></div>
+    <span id="gp-lbl">No Gamepad</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;font-size:10px">
+    <div id="ws-dot"></div>
+    <span id="ws-lbl">Disconnesso</span>
+  </div>
+</div>
+
+<!-- ══ GRID ═════════════════════════════════════════════════════════════════ -->
+<div id="grid">
+
+<!-- ═══ COL SINISTRA ════════════════════════════════════════════════════════ -->
+<div id="col-l">
+
+  <!-- DRO -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">📍 Posizione</div>
+    <div class="pnl-b" style="padding:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <span style="font-size:9px;color:var(--muted)">WORK (WPos)</span>
+        <div style="display:flex;gap:3px">
+          <button class="btn gh sm" onclick="setZero('XY')">0 XY</button>
+          <button class="btn gh sm" onclick="setZero('Z')">0 Z</button>
+          <button class="btn w sm" onclick="setZero('XYZ')">0 ALL</button>
+        </div>
+      </div>
+      <div class="dro-ax"><span class="dro-name" style="color:#ff7675">X</span>
+        <span class="dro-val" id="wx">0.000</span><span class="dro-unit">mm</span></div>
+      <div class="dro-ax"><span class="dro-name" style="color:#74b9ff">Y</span>
+        <span class="dro-val" id="wy">0.000</span><span class="dro-unit">mm</span></div>
+      <div class="dro-ax"><span class="dro-name" style="color:#55efc4">Z</span>
+        <span class="dro-val" id="wz">0.000</span><span class="dro-unit">mm</span></div>
+      <div style="border-top:1px solid var(--s3);margin:7px 0 5px"></div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">MACHINE (MPos)</div>
+      <div style="display:flex;gap:10px;font-size:11px">
+        X<span id="mx" style="color:var(--text)">0.000</span>
+        Y<span id="my" style="color:var(--text)">0.000</span>
+        Z<span id="mz" style="color:var(--text)">0.000</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feed / Spindle + Override -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">⚡ Feed &amp; Spindle</div>
+    <div class="pnl-b" style="padding:9px">
+      <div style="display:flex;gap:10px;margin-bottom:7px">
+        <div>Feed: <strong id="cf">0</strong> <span style="color:var(--muted)">mm/min</span></div>
+        <div>Spindle: <strong id="cs">0</strong> <span style="color:var(--muted)">RPM</span></div>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Feed %</span>
+        <input type="range" class="ov-sl" id="of-sl" min="10" max="200" value="100"
+          oninput="odsp('f')" onchange="sendOv('f',this.value)">
+        <span class="ov-pct" id="of-p">100%</span>
+        <button class="ov-b" onclick="iov('f',-10)">−</button>
+        <button class="ov-b" onclick="rov('f')">↺</button>
+        <button class="ov-b" onclick="iov('f',10)">+</button>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Rapid %</span>
+        <input type="range" class="ov-sl" id="or-sl" min="25" max="100" step="25" value="100"
+          oninput="odsp('r')" onchange="sendOv('r',this.value)">
+        <span class="ov-pct" id="or-p">100%</span>
+        <button class="ov-b" onclick="iov('r',-25)">−</button>
+        <button class="ov-b" onclick="rov('r')">↺</button>
+        <button class="ov-b" onclick="iov('r',25)">+</button>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Spindle %</span>
+        <input type="range" class="ov-sl" id="os-sl" min="10" max="200" value="100"
+          oninput="odsp('s')" onchange="sendOv('s',this.value)">
+        <span class="ov-pct" id="os-p">100%</span>
+        <button class="ov-b" onclick="iov('s',-10)">−</button>
+        <button class="ov-b" onclick="rov('s')">↺</button>
+        <button class="ov-b" onclick="iov('s',10)">+</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pin / Ingressi -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🔌 Ingressi</div>
+    <div class="pnl-b" style="padding:7px">
+      <div class="pins">
+        <div class="pin"><div class="led" id="plx"></div><span class="pname">Lim X</span></div>
+        <div class="pin"><div class="led" id="ply"></div><span class="pname">Lim Y</span></div>
+        <div class="pin"><div class="led" id="plz"></div><span class="pname">Lim Z</span></div>
+        <div class="pin"><div class="led prb" id="pprb"></div><span class="pname">Probe</span></div>
+        <div class="pin"><div class="led" id="pdoor"></div><span class="pname">Door</span></div>
+        <div class="pin"><div class="led" id="phold"></div><span class="pname">Hold</span></div>
+        <div class="pin"><div class="led" id="pcs"></div><span class="pname">Start</span></div>
+        <div class="pin"><div class="led" id="psp"></div><span class="pname">Spindle</span></div>
+      </div>
+      <div style="display:flex;gap:5px;margin-top:6px;font-size:10px">
+        <div id="afl" style="padding:2px 7px;border-radius:3px;border:1px solid var(--s3);color:var(--muted)">Flood OFF</div>
+        <div id="ami" style="padding:2px 7px;border-radius:3px;border:1px solid var(--s3);color:var(--muted)">Mist OFF</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Console -->
+  <div class="pnl" style="flex:1;min-height:80px">
+    <div class="pnl-t" style="justify-content:space-between">
+      📟 Console
+      <button class="btn gh sm" onclick="clrCon()">Clear</button>
+    </div>
+    <div id="con"></div>
+  </div>
+
+</div><!-- /col-l -->
+
+<!-- ═══ COL CENTRALE ════════════════════════════════════════════════════════ -->
+<div id="col-c">
+
+  <!-- Viewer 3D -->
+  <div class="pnl" id="vpnl">
+    <div class="vtb">
+      <span style="font-size:9px;color:var(--muted)">Vista:</span>
+      <button class="vb ac" id="vt" onclick="setView('top')">XY</button>
+      <button class="vb" id="vf" onclick="setView('front')">XZ</button>
+      <button class="vb" id="vs" onclick="setView('side')">YZ</button>
+      <button class="vb" id="vi" onclick="setView('iso')">ISO</button>
+      <div style="flex:1"></div>
+      <button class="vb" onclick="viewer.fit()">⊡ Fit</button>
+      <button class="vb" onclick="viewer.reset()">↺</button>
+      <span id="cpos" style="font-size:9px;color:var(--muted);margin-left:6px">—</span>
+    </div>
+    <div id="vwrap"><canvas id="cv"></canvas></div>
+  </div>
+
+  <!-- G-code / MDI / Settings -->
+  <div class="pnl" id="cpnl">
+    <div class="tabs">
+      <div class="tab ac" data-pane="tgc">G-code</div>
+      <div class="tab" data-pane="tmdi">MDI</div>
+      <div class="tab" data-pane="tset">Impostazioni</div>
+      <div class="tab" data-pane="tedt">Editor</div>
+    </div>
+    <!-- G-code -->
+    <div class="tp ac" id="tgc">
+      <div id="drop" onclick="document.getElementById('fi').click()"
+        ondragover="ev.preventDefault();this.classList.add('ov')"
+        ondragleave="this.classList.remove('ov')"
+        ondrop="dropGc(event)">
+        <input type="file" id="fi" accept=".nc,.gcode,.gc,.cnc,.txt,.ngc"
+          style="display:none" onchange="loadFile(this.files[0])">
+        📂 Trascina file G-code qui, o clicca
+      </div>
+      <div class="si"><span id="si">Nessun file</span><span id="spc">0%</span></div>
+      <div class="prog"><div class="pb" id="pb"></div></div>
+      <div style="display:flex;gap:3px;flex-wrap:wrap">
+        <button class="btn g sm" id="bpl" onclick="stStart()" disabled>▶ Start</button>
+        <button class="btn w sm" id="bpa" onclick="stPause()" disabled>⏸ Pausa</button>
+        <button class="btn d sm" onclick="stStop()">⏹ Stop</button>
+        <button class="btn gh sm" onclick="clrGc()">🗑 Svuota</button>
+      </div>
+    </div>
+    <!-- MDI -->
+    <div class="tp" id="tmdi">
+      <div style="font-size:10px;color:var(--muted)">Comando singolo GRBL:</div>
+      <div style="display:flex;gap:4px">
+        <input type="text" id="mdi" placeholder="G0 X10, $H, $X …">
+        <button class="btn p sm" onclick="sendMDI()">↵</button>
+      </div>
+      <div style="font-size:9px;color:var(--muted)">Rapidi:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px">
+        <button class="btn gh sm" onclick="rt(0x3F)">?</button>
+        <button class="btn gh sm" onclick="sc('$$')">$$</button>
+        <button class="btn gh sm" onclick="sc('$#')">$#</button>
+        <button class="btn gh sm" onclick="sc('$G')">$G</button>
+        <button class="btn gh sm" onclick="sc('$I')">$I</button>
+        <button class="btn gh sm" onclick="sc('G10 L20 P1 X0 Y0 Z0')">Zero WCS</button>
+        <button class="btn gh sm" onclick="sc('G28.1')">Set G28</button>
+        <button class="btn gh sm" onclick="sc('G28')">Go G28</button>
+        <button class="btn gh sm" onclick="sc('G30')">Go G30</button>
+        <button class="btn gh sm" onclick="sc('M3 S1000')">M3 S1000</button>
+        <button class="btn gh sm" onclick="sc('M5')">M5</button>
+        <button class="btn gh sm" onclick="sc('M8')">M8 Flood</button>
+        <button class="btn gh sm" onclick="sc('M9')">M9 Stop</button>
+      </div>
+    </div>
+    <!-- Impostazioni $$ -->
+    <div class="tp" id="tset">
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="btn p sm" onclick="loadSet()">↻ Carica $$</button>
+        <input type="text" placeholder="Cerca…" style="flex:1;background:var(--s2);
+          border:1px solid var(--s3);border-radius:3px;color:var(--text);padding:3px 6px;
+          font-family:var(--mono);font-size:10px;outline:none" oninput="filterSet(this.value)">
+      </div>
+      <table class="stbl" style="width:100%">
+        <thead><tr><th>$</th><th>Descrizione</th><th>Valore</th><th></th></tr></thead>
+        <tbody id="stb"></tbody>
+      </table>
+    </div>
+    <!-- Editor G-code -->
+    <div class="tp" id="tedt">
+      <div style="font-size:9px;color:var(--muted)">Incolla G-code, poi carica nel controller:</div>
+      <textarea id="gta" rows="8" placeholder="G21 G90&#10;G0 Z5&#10;G0 X0 Y0&#10;..."></textarea>
+      <div style="display:flex;gap:4px">
+        <button class="btn p sm" onclick="sendGcodeText()">📤 Carica nel controller</button>
+        <button class="btn gh sm" onclick="document.getElementById('gta').value=''">🗑</button>
+        <button class="btn g sm" onclick="vizGcodeText()">👁 Visualizza</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col-c -->
+
+<!-- ═══ COL DESTRA ══════════════════════════════════════════════════════════ -->
+<div id="col-r">
+
+  <!-- Jog -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🕹 Jog <span id="gp-ind" style="font-size:9px;color:var(--cl);display:none">● Gamepad</span></div>
+    <div class="pnl-b" style="padding:8px">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Step (mm):</div>
+      <div class="steps" id="stps" style="margin-bottom:6px">
+        <button class="sb" onclick="ss(.01)">.01</button>
+        <button class="sb" onclick="ss(.1)">.1</button>
+        <button class="sb ac" onclick="ss(1)">1</button>
+        <button class="sb" onclick="ss(5)">5</button>
+        <button class="sb" onclick="ss(10)">10</button>
+        <button class="sb" onclick="ss(50)">50</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">
+        <span style="font-size:9px;color:var(--muted)">Jog F:</span>
+        <input type="number" id="jf" value="1000" min="1" max="8000" class="ni" style="width:70px">
+        <span style="font-size:9px;color:var(--muted)">mm/min</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <div style="flex:1">
+          <div class="jpad">
+            <div class="jb" onclick="jog('X-1 Y1')">↖</div>
+            <div class="jb" onclick="jog('Y1')">↑</div>
+            <div class="jb" onclick="jog('X1 Y1')">↗</div>
+            <div class="jb" onclick="jog('X-1')">←</div>
+            <div class="jb ctr">XY</div>
+            <div class="jb" onclick="jog('X1')">→</div>
+            <div class="jb" onclick="jog('X-1 Y-1')">↙</div>
+            <div class="jb" onclick="jog('Y-1')">↓</div>
+            <div class="jb" onclick="jog('X1 Y-1')">↘</div>
+          </div>
+        </div>
+        <div class="jz" style="width:44px">
+          <span style="text-align:center;font-size:9px;color:var(--muted)">Z</span>
+          <div class="jzb gh" onclick="jog('Z1')" style="border:1px solid var(--s3)">▲<br><span style="font-size:8px">+Z</span></div>
+          <div class="jzb gh" onclick="jog('Z-1')" style="border:1px solid var(--s3)">▼<br><span style="font-size:8px">-Z</span></div>
+        </div>
+      </div>
+      <button class="btn d fw sm" style="margin-top:5px" onclick="jogStop()">⏹ Stop Jog (ESC)</button>
+    </div>
+  </div>
+
+  <!-- Comandi rapidi / Macro -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🔧 Comandi</div>
+    <div class="pnl-b" style="padding:7px">
+      <div class="mgr">
+        <button class="btn w" onclick="rt(0x18)">🔄 Reset</button>
+        <button class="btn p" onclick="sc('$X')">🔓 Unlock</button>
+        <button class="btn p" onclick="sc('$H')">🏠 Home All</button>
+        <button class="btn gh" onclick="sc('$HZ')">Home Z</button>
+        <button class="btn gh" onclick="rt(0x7E)">▶ Start~</button>
+        <button class="btn gh" onclick="rt(0x21)">⏸ Hold!</button>
+        <button class="btn gh" onclick="rt(0x9E)">🌀 Spindle</button>
+        <button class="btn gh" onclick="rt(0xA0)">💧 Flood</button>
+        <button class="btn gh" onclick="probeZ()">🔩 Probe Z</button>
+        <button class="btn gh" onclick="sc('G28')">↩ G28</button>
+      </div>
+      <!-- Probe config -->
+      <div style="border-top:1px solid var(--s3);margin-top:7px;padding-top:7px">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:4px">Probe Z:</div>
+        <div style="display:flex;gap:4px">
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Profondità</div>
+            <input type="number" id="pd" value="-20" class="ni"></div>
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Feed</div>
+            <input type="number" id="pf" value="50" class="ni"></div>
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Spessore</div>
+            <input type="number" id="pt" value="2" step="0.1" class="ni"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WCS / Zero -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">📐 WCS / Zero</div>
+    <div class="pnl-b" style="padding:7px">
+      <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:6px">
+        <button class="btn gh sm" onclick="sc('G54')">G54</button>
+        <button class="btn gh sm" onclick="sc('G55')">G55</button>
+        <button class="btn gh sm" onclick="sc('G56')">G56</button>
+        <button class="btn gh sm" onclick="sc('G57')">G57</button>
+        <button class="btn gh sm" onclick="sc('G58')">G58</button>
+        <button class="btn gh sm" onclick="sc('G59')">G59</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:3px">
+        <button class="btn w sm" onclick="setZero('X')">Zero X</button>
+        <button class="btn w sm" onclick="setZero('Y')">Zero Y</button>
+        <button class="btn w sm" onclick="setZero('Z')">Zero Z</button>
+      </div>
+      <button class="btn w fw sm" onclick="setZero('XYZ')">Zero X+Y+Z</button>
+      <!-- Go to -->
+      <div style="border-top:1px solid var(--s3);margin-top:7px;padding-top:6px">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Vai a posizione WCS:</div>
+        <div style="display:flex;gap:3px;margin-bottom:3px">
+          <input type="number" id="gtx" placeholder="X" value="0" class="ni" style="flex:1">
+          <input type="number" id="gty" placeholder="Y" value="0" class="ni" style="flex:1">
+          <input type="number" id="gtz" placeholder="Z" value="0" class="ni" style="flex:1">
+        </div>
+        <div style="display:flex;gap:3px">
+          <button class="btn p sm" style="flex:1" onclick="goXY()">→ XY</button>
+          <button class="btn p sm" style="flex:1" onclick="goZ()">→ Z</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col-r -->
+</div><!-- /grid -->
+</div><!-- /app -->
+
+<!-- Gamepad overlay -->
+<div id="gp-overlay">
+  🎮 Gamepad attivo | L-Stick: XY jog | R2/L2: Z | △ Start | ○ Hold | ✕ Stop | □ Zero | L1/R1: Step
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+//  Costanti & Config
+// ═══════════════════════════════════════════════════════════════════════════
+const WS_URL = 'ws://' + location.hostname + ':81/';
+
+// GRBL override real-time codes
+const OV = {
+  FEED_RESET:0x90, FEED_P10:0x91, FEED_M10:0x92, FEED_P1:0x93, FEED_M1:0x94,
+  RAPID_100:0x95, RAPID_50:0x96, RAPID_25:0x97,
+  SP_RESET:0x99, SP_P10:0x9A, SP_M10:0x9B, SP_P1:0x9C, SP_M1:0x9D,
+  SP_TOGGLE:0x9E, FLOOD_TOGGLE:0xA0, MIST_TOGGLE:0xA1
+};
+
+// GRBL setting descriptions
+const SDESC = {
+  0:'Step pulse µs',1:'Step idle delay ms',2:'Step port invert',3:'Dir port invert',
+  4:'Step enable invert',5:'Limit pins invert',6:'Probe pin invert',
+  10:'Status report mask',11:'Junction deviation mm',12:'Arc tolerance mm',
+  13:'Report in inches',20:'Soft limits',21:'Hard limits',22:'Homing cycle',
+  23:'Homing dir invert',24:'Homing feed mm/min',25:'Homing seek mm/min',
+  26:'Homing debounce ms',27:'Homing pull-off mm',28:'Max spindle RPM',
+  29:'Min spindle RPM',30:'Laser mode',100:'X step/mm',101:'Y step/mm',
+  102:'Z step/mm',110:'X max rate mm/min',111:'Y max rate mm/min',
+  112:'Z max rate mm/min',120:'X accel mm/s²',121:'Y accel mm/s²',
+  122:'Z accel mm/s²',130:'X max travel mm',131:'Y max travel mm',
+  132:'Z max travel mm'
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Stato applicazione
+// ═══════════════════════════════════════════════════════════════════════════
+let ws, state = {
+  connected:false, grblState:'—',
+  mpos:[0,0,0], wpos:[0,0,0], wco:[0,0,0],
+  feed:0, spindle:0, ov:[100,100,100],
+  pins:{}, acc:{}, stream:{running:false,paused:false,sent:0,acked:0,total:0}
+};
+let jogStep = 1;
+let gcLines = [];
+let spOn = false, flOn = false;
+let settings = {};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WebSocket
+// ═══════════════════════════════════════════════════════════════════════════
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    state.connected = true;
+    updConn(true);
+    clog('Connesso a GRBL-Remote', 'ok');
+  };
+  ws.onclose = () => {
+    state.connected = false;
+    updConn(false);
+    clog('Disconnesso — riconnessione…', 'wn');
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => clog('Errore WebSocket', 'er');
+  ws.onmessage = e => onMsg(JSON.parse(e.data));
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+function sc(cmd) {
+  send({type:'cmd', cmd});
+  clog('→ ' + cmd, 'tx');
+}
+
+function rt(code) {
+  // Real-time (1 byte): inviato come {type:'rt'} → il firmware usa sendRaw()
+  // senza '\n' (necessario per ~ ! ? e per i byte 0x80+ degli override)
+  send({type:'rt', code});
+  clog('→ RT 0x' + code.toString(16).toUpperCase(), 'tx');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Message handler
+// ═══════════════════════════════════════════════════════════════════════════
+function onMsg(m) {
+  switch(m.type) {
+    case 'status':       updStatus(m); break;
+    case 'ok':           clog('← ok','ok'); break;
+    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga '+m.lineNo+')':''),'er');
+                         toast('Errore GRBL '+m.code,'er'); break;
+    case 'alarm':        clog('⚠ ALARM:'+m.code,'er'); toast('ALARM '+m.code); break;
+    case 'raw':          clog('← '+m.line,'rx'); break;
+    case 'info':         clog('← '+m.line,'rx'); break;
+    case 'welcome':      clog('← '+m.version,'ok'); break;
+    case 'setting':      parseSetting(m.raw); clog('← '+m.raw,'rx'); break;
+    case 'file_ready':
+      gcLines.length = 0;
+      g('si').textContent = m.lines + ' linee caricate';
+      g('bpl').disabled = false;
+      g('bpa').disabled = true;
+      clog('File pronto: '+m.lines+' linee','ok');
+      break;
+    case 'stream_progress':
+      updProg(m.sent, m.acked, m.total);
+      state.stream = {running:true, paused:false, sent:m.sent, acked:m.acked, total:m.total};
+      break;
+    case 'stream_done':
+      updProg(m.total, m.total, m.total);
+      clog('✅ Job completato ('+m.total+' linee)','ok');
+      toast('Job completato!');
+      g('bpa').disabled = true;
+      break;
+    case 'stream_stopped':
+      clog('⏹ Streaming interrotto','wn');
+      updProg(0,0,0);
+      g('bpa').disabled = true;
+      g('bpl').disabled = gcLines.length === 0;
+      break;
+    case 'error_msg':
+      clog('⚠ '+m.msg,'er'); toast(m.msg); break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Status update
+// ═══════════════════════════════════════════════════════════════════════════
+function updStatus(s) {
+  state.grblState = s.state;
+  state.mpos = s.mpos; state.wpos = s.wpos; state.wco = s.wco;
+  state.feed = s.feed; state.spindle = s.spindle;
+  state.ov = s.ov; state.pins = s.pins; state.acc = s.acc;
+  if (s.stream) state.stream = s.stream;
+  spOn = s.acc.spindle; flOn = s.acc.flood;
+  renderStatus();
+}
+
+function renderStatus() {
+  const sc = {Idle:['#3fb950','#3fb95022'],Run:['#58a6ff','#58a6ff22'],
+    Hold:['#d29922','#d2992222'],Jog:['#17c0d0','#17c0d022'],
+    Alarm:['#f85149','#f8514922'],Door:['#d29922','#d2992222'],
+    Home:['#58a6ff','#58a6ff22'],Sleep:['#6e7681','#6e768122'],
+    Check:['#8b949e','#8b949e22'],Disconnected:['#6e7681','transparent']};
+  const [col,bg] = sc[state.grblState] || sc.Disconnected;
+  const sb = g('sb');
+  sb.textContent = state.grblState;
+  sb.style.color = col; sb.style.background = bg; sb.style.borderColor = col+'66';
+
+  g('wx').textContent = fmt(state.wpos[0]);
+  g('wy').textContent = fmt(state.wpos[1]);
+  g('wz').textContent = fmt(state.wpos[2]);
+  g('mx').textContent = fmt(state.mpos[0]);
+  g('my').textContent = fmt(state.mpos[1]);
+  g('mz').textContent = fmt(state.mpos[2]);
+
+  g('cf').textContent = Math.round(state.feed);
+  g('cs').textContent = Math.round(state.spindle);
+
+  if (state.ov && state.ov.length >= 3) {
+    g('of-sl').value = state.ov[0]; g('of-p').textContent = state.ov[0]+'%';
+    g('or-sl').value = state.ov[1]; g('or-p').textContent = state.ov[1]+'%';
+    g('os-sl').value = state.ov[2]; g('os-p').textContent = state.ov[2]+'%';
+  }
+
+  const P = state.pins || {};
+  led('plx', P.lx); led('ply', P.ly); led('plz', P.lz);
+  led('pprb', P.prb, true); led('pdoor', P.door);
+  led('phold', P.hold); led('pcs', P.cs); led('psp', (state.acc||{}).spindle);
+
+  const A = state.acc || {};
+  acEl('afl', A.flood, 'Flood ON', 'Flood OFF');
+  acEl('ami', A.mist, 'Mist ON', 'Mist OFF');
+
+  viewer.setTool(state.wpos[0], state.wpos[1], state.wpos[2]);
+}
+
+function led(id, on, isProbe=false) {
+  const el = g(id); if (!el) return;
+  el.classList.toggle('on', !!on);
+  if (isProbe) el.classList.toggle('prb', !!on);
+}
+function acEl(id, on, t, f) {
+  const el = g(id);
+  el.textContent = on ? t : f;
+  el.style.color = on ? 'var(--cl)' : 'var(--muted)';
+  el.style.borderColor = on ? 'var(--cl)' : 'var(--s3)';
+}
+function fmt(v) { return (parseFloat(v)||0).toFixed(3).padStart(8,' '); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Jog
+// ═══════════════════════════════════════════════════════════════════════════
+function ss(v) {
+  jogStep = v;
+  g('stps').querySelectorAll('.sb').forEach(b =>
+    b.classList.toggle('ac', parseFloat(b.textContent) === v));
+}
+
+function jog(axesStr) {
+  // axesStr es. "X1 Y-1" oppure "Z1"
+  const f = parseFloat(g('jf').value) || 1000;
+  let axes = '';
+  axesStr.split(' ').forEach(tok => {
+    const ax = tok[0];
+    const dir = parseFloat(tok.substring(1));
+    axes += ax + (dir * jogStep).toFixed(3) + ' ';
+  });
+  send({type:'jog', axes:axes.trim(), feed:f});
+}
+
+function jogStop() { send({type:'jog_cancel'}); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  G-code
+// ═══════════════════════════════════════════════════════════════════════════
+function loadFile(file) {
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = e => {
+    const txt = e.target.result;
+    // Visualizza localmente
+    parseViz(txt);
+    // Carica sul controller
+    uploadGc(file.name, txt);
+  };
+  rd.readAsText(file);
+}
+
+function uploadGc(name, text) {
+  const blob = new Blob([text], {type:'text/plain'});
+  const fd = new FormData(); fd.append('file', blob, name);
+  clog('Caricamento "'+name+'"…', 'tx');
+  fetch('/api/upload', {method:'POST', body:fd})
+    .then(r => r.json())
+    .then(j => {
+      clog('File pronto: '+j.lines+' linee', 'ok');
+      g('si').textContent = j.lines+' linee — '+name;
+      g('bpl').disabled = false;
+    })
+    .catch(e => clog('Errore upload: '+e,'er'));
+}
+
+function dropGc(ev) {
+  ev.preventDefault();
+  g('drop').classList.remove('ov');
+  const f = ev.dataTransfer.files[0];
+  if (f) loadFile(f);
+}
+
+function sendGcodeText() {
+  const txt = g('gta').value.trim();
+  if (!txt) return;
+  parseViz(txt);
+  send({type:'gcode_text', text:txt});
+  clog('G-code dall\'editor inviato al controller','tx');
+}
+
+function vizGcodeText() {
+  parseViz(g('gta').value);
+  toast('Visualizzazione aggiornata');
+}
+
+function stStart() {
+  send({type:'stream_start'});
+  g('bpl').disabled = true;
+  g('bpa').disabled = false;
+  clog('▶ Streaming avviato','ok');
+}
+function stPause() {
+  send({type:'stream_pause'});
+  clog('⏸ Pausa/Riprendi','wn');
+}
+function stStop() {
+  send({type:'stream_stop'});
+}
+function clrGc() {
+  gcLines = []; viewer.clearPath();
+  g('si').textContent = 'Nessun file';
+  g('bpl').disabled = true;
+  updProg(0,0,0);
+}
+function updProg(sent, acked, total) {
+  const pct = total > 0 ? Math.round(100*acked/total) : 0;
+  g('pb').style.width = pct+'%';
+  g('spc').textContent = pct+'%';
+  g('si').textContent = acked+' / '+total+' linee';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MDI
+// ═══════════════════════════════════════════════════════════════════════════
+function sendMDI() {
+  const inp = g('mdi'); const cmd = inp.value.trim();
+  if (!cmd) return;
+  sc(cmd); inp.value = ''; inp.focus();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Zero / WCS / Goto
+// ═══════════════════════════════════════════════════════════════════════════
+function setZero(axes) { send({type:'set_zero', axes}); clog('→ Zero '+axes,'tx'); }
+function probeZ() {
+  const d = g('pd').value||'-20', f = g('pf').value||'50';
+  const t = parseFloat(g('pt').value)||2;
+  ['G91','G38.2 Z'+d+' F'+f,'G10 L20 P1 Z'+t,'G90','G0 Z5'].forEach(c => sc(c));
+  clog('Probe Z avviato (spessore='+t+'mm)','ok');
+}
+function goXY() { sc('G90 G0 X'+g('gtx').value+' Y'+g('gty').value); }
+function goZ()  { sc('G90 G0 Z'+g('gtz').value); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Override
+// ═══════════════════════════════════════════════════════════════════════════
+function odsp(w) {
+  const id = w==='f'?'of':w==='r'?'or':'os';
+  g(id+'-p').textContent = g(id+'-sl').value+'%';
+}
+function sendOv(w, val) {
+  val = parseInt(val);
+  if (w==='f') {
+    rt(OV.FEED_RESET);
+    const d = val-100; const s = Math.floor(Math.abs(d)/10);
+    const c = d>0?OV.FEED_P10:OV.FEED_M10;
+    for(let i=0;i<s;i++) rt(c);
+  } else if (w==='r') {
+    rt(val>=100?OV.RAPID_100:val>=50?OV.RAPID_50:OV.RAPID_25);
+  } else {
+    rt(OV.SP_RESET);
+    const d = val-100; const s = Math.floor(Math.abs(d)/10);
+    const c = d>0?OV.SP_P10:OV.SP_M10;
+    for(let i=0;i<s;i++) rt(c);
+  }
+}
+function iov(w, d) {
+  const id = w==='f'?'of-sl':w==='r'?'or-sl':'os-sl';
+  const sl = g(id);
+  sl.value = Math.min(sl.max, Math.max(sl.min, parseInt(sl.value)+d));
+  odsp(w); sendOv(w, sl.value);
+}
+function rov(w) {
+  const id = w==='f'?'of-sl':w==='r'?'or-sl':'os-sl';
+  g(id).value = 100; odsp(w);
+  rt(w==='f'?OV.FEED_RESET:w==='r'?OV.RAPID_100:OV.SP_RESET);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Impostazioni
+// ═══════════════════════════════════════════════════════════════════════════
+function loadSet() {
+  g('stb').innerHTML = '';
+  send({type:'get_settings'});
+  clog('→ $$','tx');
+}
+function parseSetting(raw) {
+  const eq = raw.indexOf('=');
+  if (eq<0||!raw.startsWith('$')) return;
+  const idx = parseInt(raw.substring(1,eq)); const val = raw.substring(eq+1);
+  if (isNaN(idx)) return;
+  settings[idx] = val;
+  const old = document.getElementById('sr-'+idx);
+  if (old) old.remove();
+  const tr = document.createElement('tr');
+  tr.id = 'sr-'+idx;
+  tr.innerHTML = `<td style="color:var(--bl)">$${idx}</td>
+    <td style="color:var(--muted);font-size:9px">${SDESC[idx]||'—'}</td>
+    <td><input class="sval" id="sv-${idx}" value="${esc(val)}"
+      onkeydown="if(event.key==='Enter')saveSt(${idx})"></td>
+    <td><button class="btn gh sm" onclick="saveSt(${idx})">✓</button></td>`;
+  g('stb').appendChild(tr);
+}
+function saveSt(idx) {
+  const v = g('sv-'+idx).value;
+  send({type:'set_setting', idx, val:v});
+  clog('→ $'+idx+'='+v,'tx'); toast('$'+idx+' salvato');
+}
+function filterSet(q) {
+  q = q.toLowerCase();
+  g('stb').querySelectorAll('tr').forEach(r =>
+    r.style.display = r.textContent.toLowerCase().includes(q)?'':'none');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Console
+// ═══════════════════════════════════════════════════════════════════════════
+const MAX_LOG = 300;
+function clog(msg, cls='rx') {
+  const d = document.createElement('div'); d.className='ll';
+  const now = new Date();
+  d.innerHTML = `<span class="ts">${now.toTimeString().split(' ')[0]}</span>
+    <span class="${cls}">${esc(msg)}</span>`;
+  const con = g('con'); con.appendChild(d);
+  while(con.children.length > MAX_LOG) con.removeChild(con.firstChild);
+  con.scrollTop = con.scrollHeight;
+}
+function clrCon() { g('con').innerHTML=''; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  UI helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function g(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function updConn(v) {
+  g('ws-dot').style.background = v?'var(--gl)':'var(--rl)';
+  g('ws-lbl').textContent = v?'Connesso':'Disconnesso';
+}
+let _toast;
+function toast(msg) {
+  const t = g('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(_toast); _toast = setTimeout(()=>t.classList.remove('on'),2500);
+}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    const paneId = this.dataset.pane;
+    this.closest('.tabs').querySelectorAll('.tab').forEach(t=>t.classList.remove('ac'));
+    this.classList.add('ac');
+    // Panes sono i siblings successivi del contenitore tabs
+    const container = this.closest('.pnl');
+    container.querySelectorAll('.tp').forEach(p=>p.classList.toggle('ac', p.id===paneId));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  G-code Parser & Visualizzatore 3D (Canvas 2D)
+// ═══════════════════════════════════════════════════════════════════════════
+const viewer = (() => {
+  const cv = g('cv');
+  const ctx = cv.getContext('2d');
+  let view = 'top';
+  let paths = [];
+  let tool = {x:0,y:0,z:0};
+  let bbox = {x0:0,x1:300,y0:0,y1:200,z0:-80,z1:0};
+  let panX=0,panY=0,zoom=1,dragging=false,lmx=0,lmy=0;
+
+  const C = {
+    G0:'#444',G1:'#17c0d0',G2:'#56d364',G3:'#56d364',
+    tool:'#ff7675',bg:'#0d1117',grid:'#1a2234',org:'#ff767555'
+  };
+
+  function resize() {
+    cv.width  = cv.offsetWidth;
+    cv.height = cv.offsetHeight;
+    fit(); draw();
+  }
+
+  function proj(x,y,z) {
+    let px,py;
+    if (view==='top')       { px=x;  py=-y; }
+    else if (view==='front'){ px=x;  py=-z; }
+    else if (view==='side') { px=y;  py=-z; }
+    else { // iso
+      px = (x-y)*0.866;
+      py = (x+y)*0.5 - z;
+    }
+    return {sx: cv.width/2+panX+px*zoom, sy: cv.height/2+panY+py*zoom};
+  }
+
+  function fit() {
+    if (!paths.length) {
+      zoom = Math.min(cv.width,cv.height)/(Math.max(bbox.x1,bbox.y1)*1.5||300);
+      panX=panY=0; return;
+    }
+    let mn=[Infinity,Infinity],mx=[-Infinity,-Infinity];
+    for(const p of paths) for(const pt of p.pts) {
+      const {sx,sy}=proj(pt.x,pt.y,pt.z);
+      if(sx<mn[0])mn[0]=sx; if(sx>mx[0])mx[0]=sx;
+      if(sy<mn[1])mn[1]=sy; if(sy>mx[1])mx[1]=sy;
+    }
+    if(!isFinite(mn[0])){zoom=1;panX=panY=0;return;}
+    const pad=28;
+    const rw=(cv.width-pad*2)/(mx[0]-mn[0]||1);
+    const rh=(cv.height-pad*2)/(mx[1]-mn[1]||1);
+    zoom=Math.min(rw,rh);
+    panX=-(mn[0]+(mx[0]-mn[0])/2-cv.width/2);
+    panY=-(mn[1]+(mx[1]-mn[1])/2-cv.height/2);
+  }
+
+  function draw() {
+    ctx.fillStyle=C.bg; ctx.fillRect(0,0,cv.width,cv.height);
+    drawGrid(); drawPaths(); drawTool(); drawAxisLabels();
+  }
+
+  function drawGrid() {
+    const step=10;
+    ctx.strokeStyle=C.grid; ctx.lineWidth=0.5;
+    // Origine
+    const o=proj(0,0,0);
+    ctx.strokeStyle=C.org; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(o.sx-12,o.sy); ctx.lineTo(o.sx+12,o.sy);
+    ctx.moveTo(o.sx,o.sy-12); ctx.lineTo(o.sx,o.sy+12); ctx.stroke();
+    // Griglia
+    ctx.strokeStyle=C.grid; ctx.lineWidth=0.4;
+    const ranges = {
+      top:  [[bbox.x0,bbox.x1],[bbox.y0,bbox.y1]],
+      front:[[bbox.x0,bbox.x1],[bbox.z0,bbox.z1]],
+      side: [[bbox.y0,bbox.y1],[bbox.z0,bbox.z1]],
+      iso:  [[bbox.x0,bbox.x1],[bbox.y0,bbox.y1]]
+    }[view];
+    if (!ranges) return;
+    for(let gx=Math.ceil(ranges[0][0]/step)*step; gx<=ranges[0][1]; gx+=step) {
+      ctx.beginPath();
+      const a=view==='top'?proj(gx,ranges[1][0],0):view==='front'?proj(gx,0,ranges[1][0]):proj(0,gx,ranges[1][0]);
+      const b=view==='top'?proj(gx,ranges[1][1],0):view==='front'?proj(gx,0,ranges[1][1]):proj(0,gx,ranges[1][1]);
+      ctx.moveTo(a.sx,a.sy); ctx.lineTo(b.sx,b.sy); ctx.stroke();
+    }
+    for(let gy=Math.ceil(ranges[1][0]/step)*step; gy<=ranges[1][1]; gy+=step) {
+      ctx.beginPath();
+      const a=view==='top'?proj(ranges[0][0],gy,0):view==='front'?proj(ranges[0][0],0,gy):proj(0,ranges[0][0],gy);
+      const b=view==='top'?proj(ranges[0][1],gy,0):view==='front'?proj(ranges[0][1],0,gy):proj(0,ranges[0][1],gy);
+      ctx.moveTo(a.sx,a.sy); ctx.lineTo(b.sx,b.sy); ctx.stroke();
+    }
+  }
+
+  function drawPaths() {
+    for(const p of paths) {
+      if(p.pts.length<2) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = C[p.type]||C.G1;
+      ctx.lineWidth   = p.type==='G0'?.7:1.2;
+      ctx.setLineDash(p.type==='G0'?[4,4]:[]);
+      const s0=proj(p.pts[0].x,p.pts[0].y,p.pts[0].z);
+      ctx.moveTo(s0.sx,s0.sy);
+      for(let i=1;i<p.pts.length;i++){
+        const s=proj(p.pts[i].x,p.pts[i].y,p.pts[i].z);
+        ctx.lineTo(s.sx,s.sy);
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+
+  function drawTool() {
+    const s=proj(tool.x,tool.y,tool.z);
+    const r=9;
+    ctx.beginPath(); ctx.arc(s.sx,s.sy,r,0,Math.PI*2);
+    ctx.fillStyle=C.tool+'44'; ctx.fill();
+    ctx.strokeStyle=C.tool; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(s.sx-r*2,s.sy); ctx.lineTo(s.sx+r*2,s.sy);
+    ctx.moveTo(s.sx,s.sy-r*2); ctx.lineTo(s.sx,s.sy+r*2);
+    ctx.stroke();
+  }
+
+  function drawAxisLabels() {
+    ctx.font='10px monospace';
+    const lbl={top:['X →','Y ↑'],front:['X →','Z ↑'],side:['Y →','Z ↑'],iso:['ISO','']}[view];
+    ctx.fillStyle='#ff7675'; ctx.fillText(lbl[0],8,cv.height-18);
+    ctx.fillStyle='#74b9ff'; ctx.fillText(lbl[1],8,cv.height-6);
+  }
+
+  // ── G-code parser (G0,G1,G2,G3 con archi) ───────────────────────────────
+  function parseGc(text) {
+    paths=[];
+    const lines=text.split('\n');
+    let cur={x:0,y:0,z:0}, mode='G0', abs=true;
+    let curPath=null;
+    let bx0=Infinity,bx1=-Infinity,by0=Infinity,by1=-Infinity,bz0=0,bz1=0;
+
+    function newPath(type) {
+      if(curPath&&curPath.pts.length>1) paths.push(curPath);
+      curPath={type, pts:[{...cur}]};
+    }
+    function push(pt) {
+      if(!curPath||curPath.type!==mode) newPath(mode);
+      curPath.pts.push({...pt});
+    }
+    function arcPts(nx,ny,nz,i,j,cw,segs=32) {
+      const cx=cur.x+i, cy=cur.y+j;
+      const r=Math.sqrt(i*i+j*j);
+      let a0=Math.atan2(cur.y-cy,cur.x-cx);
+      let a1=Math.atan2(ny-cy,nx-cx);
+      let da=a1-a0;
+      if(cw&&da>0) da-=2*Math.PI;
+      if(!cw&&da<0) da+=2*Math.PI;
+      const pts=[];
+      for(let k=1;k<=segs;k++) {
+        const a=a0+(k/segs)*da;
+        const tz=cur.z+(nz-cur.z)*(k/segs);
+        pts.push({x:cx+r*Math.cos(a), y:cy+r*Math.sin(a), z:tz});
+      }
+      return pts;
+    }
+
+    for(const raw of lines) {
+      let ln=raw.trim().toUpperCase();
+      const ci=ln.indexOf(';'); if(ci>=0) ln=ln.substring(0,ci).trim();
+      const pi=ln.indexOf('('); if(pi>=0) ln=ln.substring(0,pi).trim();
+      if(!ln) continue;
+      const ws={}; const re=/([A-Z])([-+]?[0-9]*\.?[0-9]+)/g; let m;
+      while((m=re.exec(ln))!==null) ws[m[1]]=parseFloat(m[2]);
+      if('G' in ws) {
+        const gv=ws['G'];
+        if(gv===90) abs=true;
+        else if(gv===91) abs=false;
+        else if([0,1,2,3].includes(gv)) mode='G'+gv;
+      }
+      if('X' in ws||'Y' in ws||'Z' in ws) {
+        const nx='X' in ws?(abs?ws['X']:cur.x+ws['X']):cur.x;
+        const ny='Y' in ws?(abs?ws['Y']:cur.y+ws['Y']):cur.y;
+        const nz='Z' in ws?(abs?ws['Z']:cur.z+ws['Z']):cur.z;
+        if(mode==='G2'||mode==='G3') {
+          const i=ws['I']||0, j=ws['J']||0;
+          const aps=arcPts(nx,ny,nz,i,j,mode==='G2');
+          if(!curPath||curPath.type!==mode) newPath(mode);
+          for(const ap of aps) curPath.pts.push(ap);
+        } else {
+          push({x:nx,y:ny,z:nz});
+        }
+        cur={x:nx,y:ny,z:nz};
+        bx0=Math.min(bx0,cur.x);bx1=Math.max(bx1,cur.x);
+        by0=Math.min(by0,cur.y);by1=Math.max(by1,cur.y);
+        bz0=Math.min(bz0,cur.z);bz1=Math.max(bz1,cur.z);
+      }
+    }
+    if(curPath&&curPath.pts.length>1) paths.push(curPath);
+    if(isFinite(bx0)) bbox={x0:bx0,x1:bx1,y0:by0,y1:by1,z0:bz0,z1:bz1};
+    fit(); draw();
+  }
+
+  // Mouse / touch
+  cv.addEventListener('mousedown', e=>{dragging=true;lmx=e.clientX;lmy=e.clientY;});
+  cv.addEventListener('mousemove', e=>{
+    if(dragging){panX+=e.clientX-lmx;panY+=e.clientY-lmy;lmx=e.clientX;lmy=e.clientY;draw();}
+    if(view==='top'){
+      const r=cv.getBoundingClientRect();
+      const wx=(e.clientX-r.left-cv.width/2-panX)/zoom;
+      const wy=-(e.clientY-r.top-cv.height/2-panY)/zoom;
+      g('cpos').textContent='X'+wx.toFixed(2)+' Y'+wy.toFixed(2);
+    }
+  });
+  cv.addEventListener('mouseup',()=>dragging=false);
+  cv.addEventListener('mouseleave',()=>dragging=false);
+  cv.addEventListener('wheel',e=>{e.preventDefault();zoom*=e.deltaY<0?1.12:.9;draw();},{passive:false});
+
+  let ld=0;
+  cv.addEventListener('touchstart',e=>{
+    if(e.touches.length===1){dragging=true;lmx=e.touches[0].clientX;lmy=e.touches[0].clientY;}
+    else if(e.touches.length===2) ld=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+  });
+  cv.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    if(e.touches.length===1&&dragging){
+      panX+=e.touches[0].clientX-lmx;panY+=e.touches[0].clientY-lmy;
+      lmx=e.touches[0].clientX;lmy=e.touches[0].clientY;draw();
+    } else if(e.touches.length===2){
+      const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+      zoom*=d/ld;ld=d;draw();
+    }
+  },{passive:false});
+  cv.addEventListener('touchend',()=>dragging=false);
+
+  new ResizeObserver(resize).observe(cv.parentElement);
+
+  return {
+    setView(v){
+      view=v;
+      ['vt','vf','vs','vi'].forEach(id=>g(id).classList.remove('ac'));
+      g('v'+v[0]).classList.add('ac');
+      fit();draw();
+    },
+    setTool(x,y,z){tool={x,y,z};draw();},
+    clearPath(){paths=[];draw();},
+    fit(){fit();draw();},
+    reset(){zoom=1;panX=0;panY=0;draw();},
+    parse:parseGc
+  };
+})();
+
+function setView(v) { viewer.setView(v); }
+function parseViz(txt) {
+  gcLines = txt.split('\n').filter(l=>l.trim().length>0);
+  viewer.parse(txt);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Keyboard shortcuts
+// ═══════════════════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  const inp = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  if (e.key === 'Escape') { e.preventDefault(); jogStop(); }
+  if (!inp) {
+    if (e.key === ' ')  { e.preventDefault(); rt(0x21); }          // Space = Feed Hold
+    if (e.key === '~')  { e.preventDefault(); rt(0x7E); }          // ~ = Cycle Start
+    if (e.ctrlKey&&e.key==='r') { e.preventDefault(); rt(0x18); }  // Ctrl+R = Reset
+    // Numpad jog
+    const nm = {'4':['X-1'],'6':['X1'],'8':['Y1'],'2':['Y-1'],
+                 '7':['X-1 Y1'],'9':['X1 Y1'],'1':['X-1 Y-1'],'3':['X1 Y-1'],
+                 'Add':['Z1'],'Subtract':['Z-1']};
+    if (nm[e.code?.replace('Numpad','')]||nm[e.key]) {
+      e.preventDefault();
+      jog((nm[e.code?.replace('Numpad','')]||nm[e.key])[0]);
+    }
+    // Step size shortcuts
+    if (e.key==='[') { const steps=[.01,.1,1,5,10,50]; const i=steps.indexOf(jogStep);
+      if(i>0) ss(steps[i-1]); }
+    if (e.key===']') { const steps=[.01,.1,1,5,10,50]; const i=steps.indexOf(jogStep);
+      if(i<steps.length-1) ss(steps[i+1]); }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Gamepad API — PS4 / T-29 (compatibile XInput)
+// ═══════════════════════════════════════════════════════════════════════════
+let gp = null, gpActive = false;
+let gpJogTimer = null;
+// Deadzone per gli stick
+const DEAD = 0.15;
+// Mappa pulsanti PS4 / XInput standard
+const BTN = {
+  X:0, O:1, SQ:2, TRI:3,         // Cross, Circle, Square, Triangle
+  L1:4, R1:5, L2:6, R2:7,
+  SHARE:8, OPT:9,                  // Options / Start
+  L3:10, R3:11,
+  DUP:12, DDN:13, DL:14, DR:15,
+  PS:16
+};
+
+function deadzone(v) { return Math.abs(v) < DEAD ? 0 : v; }
+
+window.addEventListener('gamepadconnected', e => {
+  gp = e.gamepad;
+  gpActive = true;
+  g('gp-dot').style.background = 'var(--cl)';
+  g('gp-lbl').textContent = e.gamepad.id.substring(0,20);
+  g('gp-ind').style.display = 'inline';
+  g('gp-overlay').classList.add('show');
+  clog('🎮 Gamepad connesso: '+e.gamepad.id,'ok');
+  toast('Gamepad connesso!');
+  gpLoop();
+});
+window.addEventListener('gamepaddisconnected', () => {
+  gpActive = false;
+  g('gp-dot').style.background = 'var(--s3)';
+  g('gp-lbl').textContent = 'No Gamepad';
+  g('gp-ind').style.display = 'none';
+  g('gp-overlay').classList.remove('show');
+  clog('🎮 Gamepad disconnesso','wn');
+});
+
+let gpBtnPrev = Array(17).fill(false);
+
+function gpLoop() {
+  if (!gpActive) return;
+  const pads = navigator.getGamepads();
+  gp = pads[gp ? gp.index : 0];
+  if (!gp) { requestAnimationFrame(gpLoop); return; }
+
+  const ax = gp.axes;
+  const btn = gp.buttons;
+
+  // ── Stick sinistro → jog XY continuo (proporzionale) ─────────────────
+  const lx = deadzone(ax[0] || 0);
+  const ly = deadzone(ax[1] || 0);
+  // R2 (asse 5 su PS4) → Z+, L2 (asse 4) → Z−
+  const r2 = Math.max(0, (ax[5] !== undefined ? (ax[5]+1)/2 : (btn[BTN.R2]?.value||0)));
+  const l2 = Math.max(0, (ax[4] !== undefined ? (ax[4]+1)/2 : (btn[BTN.L2]?.value||0)));
+
+  const joyThresh = 0.15;
+  if (Math.abs(lx) > joyThresh || Math.abs(ly) > joyThresh || r2 > joyThresh || l2 > joyThresh) {
+    // Continua a mandare jog proporzionali al rate
+    const f = parseFloat(g('jf').value) || 1000;
+    let axes = '';
+    if (Math.abs(lx) > joyThresh) axes += 'X'+(lx*jogStep).toFixed(3)+' ';
+    if (Math.abs(ly) > joyThresh) axes += 'Y'+(-ly*jogStep).toFixed(3)+' ';
+    if (r2 > joyThresh)           axes += 'Z'+(r2*jogStep).toFixed(3)+' ';
+    if (l2 > joyThresh)           axes += 'Z'+(-l2*jogStep).toFixed(3)+' ';
+    if (axes.trim()) send({type:'jog', axes:axes.trim(), feed:f});
+  }
+
+  // ── D-pad → jog a step ─────────────────────────────────────────────────
+  function bp(i) { return btn[i]?.pressed && !gpBtnPrev[i]; }  // just pressed
+
+  if(bp(BTN.DR)) jog('X1');
+  if(bp(BTN.DL)) jog('X-1');
+  if(bp(BTN.DUP)) jog('Y1');
+  if(bp(BTN.DDN)) jog('Y-1');
+
+  // ── Pulsanti ───────────────────────────────────────────────────────────
+  if(bp(BTN.TRI))  rt(0x7E);                     // Triangle = Cycle Start ~
+  if(bp(BTN.O))    rt(0x21);                     // Circle = Feed Hold !
+  if(bp(BTN.X))    jogStop();                    // Cross = Stop jog
+  if(bp(BTN.SQ))   setZero('XYZ');              // Square = Zero all
+  if(bp(BTN.OPT))  sc('$H');                    // Options = Home
+  if(bp(BTN.SHARE))rt(0x18);                    // Share = Soft Reset
+  if(bp(BTN.L3))   rt(0x18);                    // L3 = Soft Reset
+
+  // R1/L1 → step size
+  if(bp(BTN.R1)){const steps=[.01,.1,1,5,10,50];const i=steps.indexOf(jogStep);if(i<steps.length-1)ss(steps[i+1]);}
+  if(bp(BTN.L1)){const steps=[.01,.1,1,5,10,50];const i=steps.indexOf(jogStep);if(i>0)ss(steps[i-1]);}
+
+  // Aggiorna stato precedente pulsanti
+  for(let i=0;i<gpBtnPrev.length;i++) gpBtnPrev[i]=btn[i]?.pressed||false;
+
+  requestAnimationFrame(gpLoop);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  connectWS();
+  // Controlla se un gamepad è già connesso (pagina ricaricata)
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (const p of pads) {
+    if (p) {
+      gp = p; gpActive = true;
+      g('gp-dot').style.background='var(--cl)';
+      g('gp-lbl').textContent = p.id.substring(0,20);
+      g('gp-ind').style.display='inline';
+      g('gp-overlay').classList.add('show');
+      gpLoop();
+      break;
+    }
+  }
+  // Listener enter per MDI
+  g('mdi').addEventListener('keydown', e => { if(e.key==='Enter') sendMDI(); });
+});
+</script>
+</body>
+</html>
