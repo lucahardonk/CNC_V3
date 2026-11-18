@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  esp32_wireless_bridge v2.1 — NodeMCU 1.0 (ESP8266 / ESP-12E)
+//  esp32_wireless_bridge v2.2 — NodeMCU 1.0 (ESP8266 / ESP-12E)
 //  Bridge WiFi + interfaccia web completa per GRBL 1.1h su Arduino Uno
 //
 //  Librerie (Library Manager):
@@ -76,6 +76,9 @@ struct StreamCtrl {
   String  nextLine;                      // riga letta ma non ancora inviata
   File    file;
   unsigned long lastProgressMs = 0;
+  unsigned long lastAckMs = 0;           // ultimo ok/error di una riga del job
+  int     lastError = 0;                 // codice error:N che ha messo in pausa
+  int     errLine   = 0;                 // riga del job che ha dato l'errore
 } stream;
 
 String grblLineBuf;
@@ -110,6 +113,7 @@ int countFileLines();
 void streamReset();
 void streamAbort();
 void sendErrorMsg(const char* msg);
+void startStopSequence();
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SETUP
@@ -118,7 +122,7 @@ void setup() {
   // Banner sulla USB prima dello swap (visibile nel Monitor Seriale)
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\n=== esp32_wireless_bridge v2.1 (ESP8266) ==="));
+  Serial.println(F("\n=== esp32_wireless_bridge v2.2 (ESP8266) ==="));
   Serial.println(F("RX GRBL = D7 (GPIO13, UART hardware)  TX GRBL = D5 (GPIO14)"));
   Serial.println(F("Da qui in poi la USB non riceve piu' log (vedi console web)."));
   Serial.flush();
@@ -260,6 +264,19 @@ void handleWsMsg(const String& msg) {
 
   // Durante un job i comandi manuali (non real-time) falserebbero il
   // conteggio caratteri: vengono rifiutati.
+  // Sempre accettati, anche con job attivo
+  if (type == "estop") {
+    startStopSequence();
+    DBG.println(F("E-STOP: hold + reset"));
+    return;
+  }
+  if (type == "stream_force_clear") {
+    streamAbort();
+    stopPending = false;
+    sendErrorMsg("Stato job azzerato");
+    return;
+  }
+
   bool manual = (type == "cmd" || type == "jog" || type == "set_zero" ||
                  type == "get_settings" || type == "set_setting" ||
                  type == "gcode_text");
@@ -320,6 +337,7 @@ void handleWsMsg(const String& msg) {
     stream.file = LittleFS.open(GCODE_PATH, "r");
     if (!stream.file) { sendErrorMsg("Impossibile aprire il file G-code"); return; }
     stream.running = true;
+    stream.lastAckMs = millis();
     broadcastProgress(true);
     DBG.printf("Streaming avviato: %d righe\n", stream.total);
 
@@ -328,14 +346,12 @@ void handleWsMsg(const String& msg) {
     // invia cycle-start.
     if (!stream.running) return;
     stream.paused = !stream.paused;
+    if (!stream.paused) { stream.lastError = 0; stream.errLine = 0; stream.lastAckMs = millis(); }
     sendRaw(stream.paused ? '!' : '~');
     broadcastProgress(true);
 
   } else if (type == "stream_stop") {
-    sendRaw('!');                        // feed-hold: decelerazione controllata
-    stopPending = true;
-    stopMs = millis();
-    streamAbort();                       // nessuna nuova riga da qui in poi
+    startStopSequence();
 
   } else if (type == "gcode_text") {
     String text = doc["text"] | "";
@@ -402,6 +418,25 @@ void loopGrbl() {
       broadcastStatus();
     }
   }
+
+  // ── Watchdog job: evita lo stato "job zombie" (running per sempre) ──────
+  if (stream.running) {
+    if (grblSt.name == "Disconnected") {
+      streamAbort();
+      sendErrorMsg("Arduino non risponde: job annullato");
+    } else if (!stream.paused && !stream.pendingLen.empty() &&
+               grblSt.name == "Idle" && now - stream.lastAckMs > 3000) {
+      // GRBL fermo ma mancano degli ok: sono andati persi
+      DBG.printf("Watchdog: %u ok mancanti\n", (unsigned)stream.pendingLen.size());
+      stream.acked += stream.pendingLen.size();
+      stream.pendingLen.clear();
+      stream.txInFlight = 0;
+      stream.lastAckMs = now;
+      if (stream.eof) sendErrorMsg("Risposte 'ok' mancanti: job chiuso dal watchdog");
+      else            sendErrorMsg("Risposte 'ok' mancanti: conteggio riallineato, il job prosegue");
+      broadcastProgress(true);
+    }
+  }
 }
 
 // Consuma l'ok/error della riga più vecchia del job
@@ -411,6 +446,7 @@ static void ackStreamLine() {
   if (stream.txInFlight < 0) stream.txInFlight = 0;
   stream.pendingLen.pop_front();
   stream.acked++;
+  stream.lastAckMs = millis();
 }
 
 void processGrblLine(const String& line) {
@@ -434,6 +470,8 @@ void processGrblLine(const String& line) {
     if (inJob) {
       ackStreamLine();
       stream.paused = true;              // auto-pausa: le righe già in GRBL proseguono
+      stream.lastError = code;
+      stream.errLine   = stream.acked;
       broadcastProgress(true);
     }
     JsonDocument doc;
@@ -568,6 +606,7 @@ void streamReset() {
   if (stream.file) stream.file.close();
   stream.running = stream.paused = stream.eof = false;
   stream.sent = stream.acked = stream.txInFlight = 0;
+  stream.lastError = stream.errLine = 0;
   stream.pendingLen.clear();
   stream.nextLine = "";
 }
@@ -607,6 +646,15 @@ int countFileLines() {
   return n;
 }
 
+// Stop controllato: feed-hold subito, soft-reset a moto fermo (o dopo 3 s)
+// in loopGrbl(). Svuota anche lo stato del job. Usato da Stop ed E-STOP.
+void startStopSequence() {
+  sendRaw('!');
+  stopPending = true;
+  stopMs = millis();
+  streamAbort();
+}
+
 void sendRaw(uint8_t b) { grblTx.write(b); }
 
 void sendCmd(const String& cmd) {
@@ -641,6 +689,8 @@ void broadcastProgress(bool force) {
   doc["sent"]    = stream.sent;
   doc["acked"]   = stream.acked;
   doc["total"]   = stream.total;
+  doc["lastError"] = stream.lastError;
+  doc["errLine"]   = stream.errLine;
   broadcastJson(doc);
 }
 
@@ -669,6 +719,8 @@ String buildStatusJson() {
   JsonObject st = doc["stream"].to<JsonObject>();
   st["running"] = stream.running; st["paused"] = stream.paused;
   st["sent"] = stream.sent; st["acked"] = stream.acked; st["total"] = stream.total;
+  st["lastError"] = stream.lastError; st["errLine"] = stream.errLine;
+  doc["rx_age"] = (uint32_t)(millis() - grblSt.lastRxMs);
   String out;
   serializeJson(doc, out);
   return out;

@@ -359,6 +359,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
         <button class="btn d sm" onclick="stStop()">⏹ Stop</button>
         <button class="btn gh sm" onclick="clrGc()">🗑 Svuota</button>
       </div>
+      <div id="jobst" style="display:none;margin-top:4px;padding:4px 6px;border:1px solid var(--s3);border-radius:4px;font-size:11px;line-height:1.4">
+        <span id="jobtx"></span>
+        <button class="btn gh sm" style="margin-left:6px" onclick="forceClear()" title="Azzera lo stato del job sul bridge senza inviare nulla a GRBL">🔓 Sblocca stato</button>
+      </div>
     </div>
     <!-- MDI -->
     <div class="tp" id="tmdi">
@@ -614,7 +618,11 @@ function sc(cmd) {
   clog('→ ' + cmd, 'tx');
 }
 
-function emergencyStop(){ rt(0x21); clog('⚠ E-STOP (Feed Hold)','er'); toast('E-STOP attivato'); }
+function emergencyStop(){
+  send({type:'estop'});
+  clog('⚠ E-STOP: feed hold + reset, job annullato','er');
+  toast('E-STOP attivato. Se compare ALARM premi Unlock ($X)');
+}
 
 function rt(code) {
   // Real-time (1 byte): inviato come {type:'rt'} → il firmware usa sendRaw()
@@ -638,17 +646,18 @@ function onMsg(m) {
     case 'welcome':      clog('← '+m.version,'ok'); break;
     case 'setting':      parseSetting(m.raw); clog('← '+m.raw,'rx'); break;
     case 'file_ready':
+      stDone = false; g('pb').style.width = '0%'; g('spc').textContent = '0%';
       g('si').textContent = m.lines + ' linee caricate';
       g('bpl').disabled = false;
       g('bpa').disabled = true;
       clog('File pronto: '+m.lines+' linee','ok');
       break;
     case 'stream_progress':
-      updProg(m.sent, m.acked, m.total);
-      state.stream = {running:m.running, paused:m.paused, sent:m.sent, acked:m.acked, total:m.total};
-      if (m.running) { g('bpl').disabled = true; g('bpa').disabled = false; }
+      syncStreamUi({running:m.running, paused:m.paused, sent:m.sent, acked:m.acked,
+                    total:m.total, lastError:m.lastError||0, errLine:m.errLine||0});
       break;
     case 'stream_done':
+      stDone = true;
       updProg(m.total, m.total, m.total);
       g('bpl').disabled = false;
       clog('✅ Job completato ('+m.total+' linee)','ok');
@@ -657,12 +666,12 @@ function onMsg(m) {
       break;
     case 'stream_stopped':
       clog('⏹ Streaming interrotto','wn');
-      updProg(0,0,0);
-      g('bpa').disabled = true;
-      g('bpl').disabled = false;          // il file resta sull'ESP
+      syncStreamUi({running:false, paused:false, sent:0, acked:0,
+                    total:(state.stream||{}).total||0, lastError:0, errLine:0});
       break;
     case 'error_msg':
-      clog('⚠ '+m.msg,'er'); toast(m.msg); break;
+      clog('⚠ '+m.msg,'er');
+      toast(m.msg + (m.msg.indexOf('Job in corso')>=0 ? ' — premi Stop o Sblocca stato' : '')); break;
   }
 }
 
@@ -674,9 +683,57 @@ function updStatus(s) {
   state.mpos = s.mpos; state.wpos = s.wpos; state.wco = s.wco;
   state.feed = s.feed; state.spindle = s.spindle;
   state.ov = s.ov; state.pins = s.pins; state.acc = s.acc;
-  if (s.stream) state.stream = s.stream;
+  if (s.stream) {
+    if (!firstStatusSeen && s.stream.running)
+      clog('Job attivo sul bridge: '+s.stream.acked+'/'+s.stream.total+' righe'+
+           (s.stream.paused?' (in pausa)':''), 'wn');
+    syncStreamUi(s.stream);
+  }
+  firstStatusSeen = true;
+  if (s.state === 'Disconnected' && state.connected) {
+    const now = Date.now();
+    if (now - lastNoRxLog > 10000) {
+      lastNoRxLog = now;
+      const sec = s.rx_age != null && s.rx_age < 3.6e6 ? Math.round(s.rx_age/1000)+' s' : 'l\'avvio';
+      clog('Arduino non risponde da '+sec+': controlla cavo RX (Uno pin 1 → D7), alimentazione Uno, 115200 baud', 'wn');
+    }
+  }
   spOn = s.acc.spindle; flOn = s.acc.flood;
   renderStatus();
+}
+
+// Allinea bottoni, progresso e riga di stato del job allo stato del bridge
+// (usato per stream_progress e per ogni status → corretto anche dopo il reload)
+let firstStatusSeen = false, lastNoRxLog = 0, stDone = false;
+function syncStreamUi(st) {
+  state.stream = st;
+  const run = !!st.running, pau = !!st.paused;
+  g('bpl').disabled = run || !(st.total > 0);
+  g('bpa').disabled = !run;
+  g('bpa').textContent = run && pau ? '▶ Riprendi' : '⏸ Pausa';
+  if (run) { stDone = false; updProg(st.sent, st.acked, st.total); }
+  else if (!stDone) {
+    g('pb').style.width = '0%'; g('spc').textContent = '0%';
+    if (st.total > 0) g('si').textContent = st.total + ' linee caricate';
+  }
+  const box = g('jobst'), tx = g('jobtx');
+  if (!run) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  if (pau && st.lastError) {
+    tx.innerHTML = '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga '+st.errLine+') — '+
+      errTxt(st.lastError)+'. Correggi e premi Riprendi o Stop.';
+    box.style.borderColor = 'var(--er, #f85149)';
+  } else if (pau) {
+    tx.textContent = '⏸ In pausa — premi Riprendi o Stop';
+    box.style.borderColor = '#d29922';
+  } else {
+    tx.textContent = '▶ Job in corso ('+st.acked+'/'+st.total+')';
+    box.style.borderColor = '#58a6ff';
+  }
+}
+function forceClear() {
+  if (!confirm('Azzerare lo stato del job sul bridge? Non invia nulla a GRBL: se la macchina si sta muovendo usa E-STOP.')) return;
+  send({type:'stream_force_clear'});
 }
 
 function renderStatus() {
@@ -807,9 +864,7 @@ function vizGcodeText() {
 
 function stStart() {
   send({type:'stream_start'});
-  g('bpl').disabled = true;
-  g('bpa').disabled = false;
-  clog('▶ Streaming avviato','ok');
+  clog('▶ Avvio streaming richiesto','ok');
 }
 function stPause() {
   send({type:'stream_pause'});
