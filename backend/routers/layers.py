@@ -13,7 +13,7 @@ from database import get_db
 from models import Entity, Layer, Project
 from schemas import (EntityBatch, EntityResponse, GenerateRequest, GenerateResponse, LayerCreate, LayerResponse,
                      LayerUpdate)
-from services.gcode_generator import Params, generate_gcode
+from services.gcode_generator import IGNORED_TYPES, LayerJob, Params, generate_gcode, generate_program
 
 router = APIRouter(tags=["layers"])
 log = logging.getLogger("cnc.layers")
@@ -169,65 +169,130 @@ def _cut(l: Layer, key: str):
     return CUT_DEFAULTS[key] if v is None else v
 
 
-def layer_params(project: Project, l: Layer, body: GenerateRequest | None = None) -> tuple[Params, str | None]:
-    """Parametri di taglio: valori della richiesta (dialog) > parametri del layer > default.
-    Se è indicato un utensile della libreria il suo diametro prevale su quello del layer."""
+# parametri extra salvati in layer.params; tutti (colonne + extra + tool_id/operation) sono sovrascrivibili
+# per ogni layer di disegno con draw_layers[i].cut (il Layer 0 usa i parametri del layer di lavorazione)
+PARAM_KEYS = ("plunge_rate", "step_over", "pocket_direction", "bridge_height")
+CUT_KEYS = (*CUT_DEFAULTS, *PARAM_KEYS, "tool_id", "operation")
+
+
+def effective_cut(l: Layer, dl: dict | None = None) -> dict:
+    """Parametri di taglio effettivi del layer di lavorazione o di un suo layer di disegno."""
+    eff = {k: _cut(l, k) for k in CUT_DEFAULTS}
+    eff.update(tool_id=l.tool_id, operation=l.operation or "profile_outside")
+    prev = l.params or {}
+    eff.update({k: prev[k] for k in PARAM_KEYS if prev.get(k) is not None})
+    if dl and str(dl.get("id")) != "0":
+        cut = dl.get("cut") or {}
+        eff.update({k: v for k, v in cut.items() if k in CUT_KEYS and (v is not None or k == "tool_id")})
+    return eff
+
+
+def layer_params(project: Project, l: Layer, body: GenerateRequest | None = None,
+                 dl: dict | None = None) -> tuple[Params, str | None]:
+    """Parametri di taglio: valori della richiesta > parametri del layer di disegno (dl.cut) > parametri del
+    layer > default. Con un utensile della libreria (Impostazioni > Utensili) indicato nella richiesta il suo
+    diametro prevale."""
     body = body or GenerateRequest()
-    tools = read_json("tools.json")
+    tools = read_json("tools.json")  # libreria salvata da Impostazioni > Utensili (DATA_DIR)
     materials = read_json("materials.json")
     settings = read_json("settings.json")
     mat = materials.get(project.material, {})
     cutting = settings.get("cutting", {})
-    prev = l.params or {}
-    tool_id = body.tool_id or l.tool_id
+    eff = effective_cut(l, dl)
+    tool_id = body.tool_id or eff.get("tool_id")
     tool = next((t for t in tools if t.get("id") == tool_id), None)
     if body.tool_id and tool is None:
         raise HTTPException(400, "Utensile non trovato nella libreria")
-    diameter = float(tool["diameter"]) if (body.tool_id and tool) else float(_cut(l, "tool_diameter"))
-    feed = float(body.feed_rate or _cut(l, "feed_rate"))
+    diameter = float(tool["diameter"]) if (body.tool_id and tool) else float(eff["tool_diameter"])
+    feed = float(body.feed_rate or eff["feed_rate"])
 
     def first(*vals, default):
         return next((float(v) for v in vals if v is not None), default)
 
     params = Params(
-        operation=body.operation or l.operation,
+        operation=body.operation or eff["operation"],
         tool_diameter=diameter,
+        tool_type=str(eff.get("tool_type") or "flat"),
         tool_name=(tool.get("name", tool_id) if tool else
-                   {"flat": "Fresa piatta", "ball": "Fresa sferica", "vbit": "Fresa a V"}.get(_cut(l, "tool_type"), "Fresa")),
+                   {"flat": "Fresa piatta", "ball": "Fresa sferica", "vbit": "Fresa a V"}.get(eff["tool_type"], "Fresa")),
         material=mat.get("name", project.material),
         feed_rate=feed,
-        plunge_rate=first(body.plunge_rate, prev.get("plunge_rate"), default=round(max(50.0, feed * 0.3))),
-        spindle_rpm=first(body.spindle_rpm, default=float(_cut(l, "spindle_rpm"))),
-        depth_total=first(body.depth_total, default=abs(float(_cut(l, "z_depth")))),
-        depth_per_pass=first(body.depth_per_pass, default=float(_cut(l, "z_pass_depth"))),
-        step_over=first(body.step_over, prev.get("step_over"), (tool or {}).get("step_over"), default=0.4),
-        safe_height=first(body.safe_height, default=float(_cut(l, "z_safe"))),
-        bridge_height=first(body.bridge_height, prev.get("bridge_height"), cutting.get("bridge_height"), default=1.5),
+        plunge_rate=first(body.plunge_rate, eff.get("plunge_rate"), default=round(max(50.0, feed * 0.3))),
+        spindle_rpm=first(body.spindle_rpm, default=float(eff["spindle_rpm"])),
+        depth_total=first(body.depth_total, default=abs(float(eff["z_depth"]))),
+        depth_per_pass=first(body.depth_per_pass, default=float(eff["z_pass_depth"])),
+        step_over=first(body.step_over, eff.get("step_over"), (tool or {}).get("step_over"), default=0.4),
+        safe_height=first(body.safe_height, default=float(eff["z_safe"])),
+        bridge_height=first(body.bridge_height, eff.get("bridge_height"), cutting.get("bridge_height"), default=1.5),
         stock_z=project.stock_z,
-        pocket_direction=body.pocket_direction or prev.get("pocket_direction") or "horizontal",
+        pocket_direction=body.pocket_direction or eff.get("pocket_direction") or "horizontal",
     )
+    if tool and tool.get("max_depth") and params.depth_total > float(tool["max_depth"]):
+        params.warnings.append(f"Profondità {params.depth_total:g} mm oltre la lunghezza utile della fresa "
+                               f"\"{tool.get('name')}\" ({float(tool['max_depth']):g} mm)")
     return params, (tool_id if tool else None)
+
+
+def _machinable(e: dict) -> bool:
+    return not e.get("is_construction") and e.get("type") not in IGNORED_TYPES and e.get("type") != "bridge"
+
+
+def layer_jobs(project: Project, l: Layer, only: str | None = None, body: GenerateRequest | None = None):
+    """Un job per ogni layer di disegno visibile con geometria lavorabile, ciascuno con i SUOI parametri
+    e SOLO le sue entità (i ponticelli valgono per tutti). Ritorna (jobs, n_hidden, scope)."""
+    entities, info, n_hidden, scope = layer_entities(l, only)
+    dls = {d["id"]: d for d in draw_layers_of(l)}
+    groups: dict[str, list] = {}
+    for e in entities:
+        groups.setdefault(e["dlayer"], []).append(e)
+    if only is None:  # ponticelli disegnati su qualunque layer: valgono per tutti i percorsi
+        bridges = [e for e in entities if e.get("type") == "bridge"]
+        groups = {k: [e for e in v if e.get("type") != "bridge"] + bridges for k, v in groups.items()}
+    jobs = []
+    for dl_id, d in dls.items():
+        ents = groups.get(dl_id) or []
+        if not any(_machinable(e) for e in ents):
+            continue
+        params, _ = layer_params(project, l, body, d)
+        jobs.append(LayerJob(name=str(d.get("name") or dl_id), number=len(jobs) + 1, entities=ents, params=params,
+                             tool_type=params.tool_type, layer_info={dl_id: info[dl_id]}))
+    return jobs, n_hidden, scope
+
+
+def layer_result(project: Project, l: Layer, only: str | None = None, body: GenerateRequest | None = None):
+    """G-code del layer di lavorazione: i layer di disegno sono lavorati uno dopo l'altro, ognuno come
+    percorso indipendente (M0 solo se cambia la fresa). Lo stesso testo viene salvato, simulato e scaricato."""
+    jobs, n_hidden, scope = layer_jobs(project, l, only, body)
+    if not jobs:
+        raise ValueError("Nessuna geometria valida nel layer (disegna forme chiuse non di costruzione).")
+    if len(jobs) == 1:
+        result = generate_gcode(jobs[0].entities, jobs[0].params, layer_info=jobs[0].layer_info)
+    else:
+        result = generate_program(jobs, f"Progetto: {project.name} - Layer: {l.name}", pause_between="change")
+    result.warnings = [w for j in jobs for w in j.params.warnings] + result.warnings
+    if n_hidden:
+        result.warnings.append(f"{n_hidden} entità su layer di disegno nascosti escluse dal percorso")
+    return result, scope
 
 
 async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
     """Calcola il G-code di un layer di lavorazione con i parametri richiesti.
 
-    body.draw_layer_id = None → tutte le entità sui layer di disegno visibili;
-    altrimenti solo quelle del layer di disegno indicato (che deve essere visibile).
-    Ritorna (result, params, tool_id, operation, scope) senza salvare nulla."""
+    body.draw_layer_id = None → tutti i layer di disegno visibili (percorsi separati per layer);
+    altrimenti solo quelli del layer di disegno indicato (che deve essere visibile).
+    Ritorna (result, params, tool_id, operation, scope) senza salvare nulla; params = parametri del layer
+    di lavorazione (Layer 0)."""
     project = await db.get(Project, l.project_id)
     params, tool_id = layer_params(project, l, body)
-    operation = params.operation
-    entities, info, n_hidden, scope = layer_entities(l, body.draw_layer_id)
     try:
-        result = generate_gcode(entities, params, layer_info=info)
-        if n_hidden:
-            result.warnings.append(f"{n_hidden} entità su layer di disegno nascosti escluse dal percorso")
+        result, scope = layer_result(project, l, body.draw_layer_id, body)
     except ValueError as exc:
         msg = str(exc)
-        if scope is not None:
-            msg = f"Layer \"{scope.get('name')}\": {msg}"
+        if body.draw_layer_id is not None:
+            msg = f"Layer di disegno: {msg}"
         raise HTTPException(400, msg) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         log.exception("Errore generazione G-code")
         raise HTTPException(500, f"Errore generazione G-code: {exc}") from exc
@@ -235,7 +300,7 @@ async def build_layer_gcode(db: AsyncSession, l: Layer, body: GenerateRequest):
         result.gcode = result.gcode.replace("; CNC V3 - Generated G-code",
                                             f"; CNC V3 - Generated G-code\n; Draw layer: {scope.get('name')} (solo questo layer)", 1)
         result.line_count += 1
-    return result, params, tool_id, operation, scope
+    return result, params, tool_id, params.operation, scope
 
 
 @router.post("/layers/{layer_id}/generate", response_model=GenerateResponse)

@@ -18,9 +18,9 @@ from database import DB_PATH, engine, get_db
 from sqlalchemy import select
 
 from models import Layer, Project
-from routers.layers import _cut, build_layer_gcode, layer_entities, layer_params
+from routers.layers import build_layer_gcode, layer_jobs, layer_result
 from schemas import GenerateRequest
-from services.gcode_generator import LayerJob, generate_program
+from services.gcode_generator import generate_program
 
 router = APIRouter(tags=["export"])
 log = logging.getLogger("cnc.export")
@@ -139,55 +139,52 @@ def _nc_response(gcode: str, filename: str) -> PlainTextResponse:
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
-def _job(project: Project, l: Layer, number: int) -> LayerJob:
-    params, _ = layer_params(project, l)
-    entities, info, _n_hidden, _ = layer_entities(l)
-    return LayerJob(name=l.name, number=number, entities=entities, params=params,
-                    tool_type=_cut(l, "tool_type"), layer_info=info)
-
-
 @router.get("/export/layer/{layer_id}")
-async def export_layer_nc(layer_id: str, db: AsyncSession = Depends(get_db)):
-    """File .nc del solo layer, generato con i parametri di taglio salvati nel layer."""
+async def export_layer_nc(layer_id: str, draw_layer_id: str | None = None, db: AsyncSession = Depends(get_db)):
+    """File .nc del layer (o del solo layer di disegno `draw_layer_id`) con i parametri salvati:
+    è lo stesso G-code mostrato nella simulazione."""
     l = await db.get(Layer, layer_id)
     if not l:
         raise HTTPException(404, "Layer non trovato")
     project = await db.get(Project, l.project_id)
-    number = next((i for i, x in enumerate(project.layers, 1) if x.id == l.id), 1)
     try:
-        res = generate_program([_job(project, l, number)], f"Progetto: {project.name} - Layer: {l.name}",
-                               pause_between=False)
+        res, scope = layer_result(project, l, draw_layer_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    log.info("Export .nc layer '%s': %d linee", l.name, res.line_count)
-    return _nc_response(res.gcode, f"layer_{_fname(l.name)}.nc")
+    name = l.name + (f"_{scope.get('name')}" if scope else "")
+    log.info("Export .nc layer '%s': %d linee", name, res.line_count)
+    return _nc_response(res.gcode, f"layer_{_fname(name)}.nc")
 
 
 @router.get("/export/all/{project_id}")
 async def export_project_nc(project_id: str, db: AsyncSession = Depends(get_db)):
-    """File .nc con tutti i layer del progetto in sequenza (M0 per il cambio punta tra i layer).
-    I layer senza geometria lavorabile vengono saltati (segnalati nel commento iniziale)."""
+    """File .nc con tutti i layer del progetto in sequenza: M0 per il cambio punta all'inizio di ogni layer di
+    lavorazione e tra i suoi layer di disegno solo se cambia la fresa. I layer vuoti vengono saltati."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Progetto non trovato")
     layers = (await db.execute(select(Layer).where(Layer.project_id == project_id)
                                .order_by(Layer.order_index))).scalars().all()
     jobs, skipped = [], []
-    for i, l in enumerate(layers, 1):
-        job = _job(project, l, i)
-        if not any(not e.get("is_construction") for e in job.entities):
+    for l in layers:
+        lj, _n, _s = layer_jobs(project, l)
+        if not lj:
             skipped.append(l.name)
             continue
-        jobs.append(job)
+        for k, j in enumerate(lj):
+            j.name = l.name if len(lj) == 1 else f"{l.name} / {j.name}"
+            j.pause = True if k == 0 else None
+            j.number = len(jobs) + 1
+            jobs.append(j)
     if not jobs:
         raise HTTPException(400, "Nessun layer con geometria da esportare")
     try:
-        res = generate_program(jobs, f"Progetto: {project.name}")
+        res = generate_program(jobs, f"Progetto: {project.name}", pause_between="change")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     gcode = res.gcode
     if skipped:
         gcode = gcode.replace("G21 G90 G17 G94", "; Layer vuoti saltati: " + ", ".join(skipped).replace("\n", " ")
                               + "\nG21 G90 G17 G94", 1)
-    log.info("Export .nc progetto '%s': %d layer, %d linee", project.name, len(jobs), res.line_count)
+    log.info("Export .nc progetto '%s': %d job, %d linee", project.name, len(jobs), res.line_count)
     return _nc_response(gcode, f"progetto_{_fname(project.name)}_all.nc")

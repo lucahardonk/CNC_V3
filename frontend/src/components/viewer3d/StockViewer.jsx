@@ -5,8 +5,9 @@ import * as THREE from 'three'
 import { create } from 'zustand'
 import { MATERIAL_COLORS, useStore } from '../../store/store'
 import { parseGcode } from '../../utils/gcodeParser'
-import { Layers } from '../../services/api'
-import { arcSweep, polar, primitives } from '../cad/geometry'
+import { Download, Eye, EyeOff, Play } from 'lucide-react'
+import { errMsg, Export, Layers } from '../../services/api'
+import { arcSweep, layerColor, polar, primitives } from '../cad/geometry'
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1)
 
@@ -237,38 +238,89 @@ export function SceneBase({ project, children, cameraDist }) {
   )
 }
 
-export default function StockViewer({ project, layers, activeLayerId }) {
+const Ico = ({ tip, onClick, disabled, children, green }) => (
+  <button title={tip} disabled={disabled} onClick={(e) => { e.stopPropagation(); onClick() }}
+    className={`rounded p-1 transition disabled:opacity-30 ${green ? 'text-accent hover:bg-accent/15' : 'text-gray-400 hover:bg-white/10 hover:text-white'}`}>{children}</button>
+)
+
+// Lista di TUTTI i layer del pezzo nella vista 3D: colore, visibilità, Play (simulazione solo di quel layer)
+// e Scarica .nc (G-code solo di quel layer). I layer di disegno interni sono percorsi indipendenti.
+function LayerList({ layers, activeLayerId, hidden, toggle, onSelect, onCut }) {
+  const notify = useStore((s) => s.notify)
+  const [busy, setBusy] = useState(null)
+  const download = async (lid, dl) => {
+    setBusy(`${lid}:${dl ?? ''}`)
+    try { notify(`Scaricato ${await Export.layerNc(lid, dl)}`, 'success') } catch (e) { notify(`Download fallito: ${errMsg(e)}`, 'error') } finally { setBusy(null) }
+  }
+  const row = (key, color, name, sub, lid, dl, empty) => {
+    const off = hidden.has(key)
+    return (
+      <div key={key} className={`flex items-center gap-1.5 py-0.5 ${dl != null ? 'pl-4' : ''}`}>
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
+        <span className={`min-w-0 flex-1 cursor-pointer truncate ${off ? 'text-gray-500 line-through' : dl == null && lid === activeLayerId ? 'text-accent' : ''}`}
+          onClick={() => onSelect?.(lid)} title={sub}>{name}</span>
+        <Ico tip={off ? 'Mostra nel 3D' : 'Nascondi nel 3D'} onClick={() => toggle(key)}>{off ? <EyeOff size={12} /> : <Eye size={12} />}</Ico>
+        <Ico green tip={`Simula solo ${dl != null ? 'il layer' : 'il layer di lavorazione'} «${name}»`} disabled={empty} onClick={() => onCut?.(lid, dl)}><Play size={12} /></Ico>
+        <Ico tip={`Scarica .nc solo di «${name}»`} disabled={empty || busy === `${lid}:${dl ?? ''}`} onClick={() => download(lid, dl)}><Download size={12} /></Ico>
+      </div>
+    )
+  }
+  return (
+    <div className="absolute right-3 top-3 max-h-[70%] w-64 overflow-y-auto rounded-md border border-line bg-black/75 px-3 py-2 text-xs text-gray-300" data-testid="layer-list-3d">
+      <div className="mb-1 font-semibold text-white">Layer del pezzo <span className="text-gray-500">{layers.length}</span></div>
+      {!layers.length && <div className="text-[11px] text-gray-500">Nessun layer: creane uno dal pannello a sinistra.</div>}
+      {layers.map((l, i) => {
+        const dls = (l.draw_layers || []).filter((d) => d.id && d.id !== '0')
+        const empty = !l.entity_count
+        return (
+          <div key={l.id} className="border-t border-line/60 py-1 first-of-type:border-0">
+            {row(l.id, layerColor(i), l.name, l.gcode ? 'Percorso calcolato' : 'Percorso non ancora calcolato (premi Play)', l.id, undefined, empty)}
+            {dls.length > 0 && [{ id: '0', name: 'Layer 0', color: '#e5e7eb' }, ...l.draw_layers.filter((d) => d.id && d.id !== '0')]
+              .filter((d) => d.visible !== false)
+              .map((d) => row(`${l.id}:${d.id}`, d.color || '#e5e7eb', d.name || d.id, 'Layer di disegno: percorso indipendente con i suoi parametri', l.id, d.id, empty || hidden.has(l.id)))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export default function StockViewer({ project, layers, activeLayerId, onSelect, onCut }) {
   const active = layers.find((l) => l.id === activeLayerId)
   const activeEnts = useLayerEntities(active?.id)
   const profileEnts = useMemo(() => scopeEntities(activeEnts, active), [activeEnts, active])
-  const groups = useGcodeLayers(active?.gcode)
-  const [hiddenGroups, setHiddenGroups] = useState(new Set())
-  useEffect(() => setHiddenGroups(new Set()), [active?.id, active?.gcode])
-  const onlyGroups = useMemo(() => (hiddenGroups.size ? new Set(groups.map((g) => g.id).filter((id) => !hiddenGroups.has(id))) : null), [groups, hiddenGroups])
-  const scopeName = active?.params?.draw_layer_name
+  // visibilità nel 3D: chiavi "<layer>" e "<layer>:<layer di disegno>" (solo vista, non cambia il G-code)
+  const [hidden, setHidden] = useState(() => new Set())
+  const toggle = (k) => setHidden((h) => { const n = new Set(h); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  const visible = layers.filter((l) => l.gcode && !hidden.has(l.id))
   return (
     <div className="relative h-full w-full">
       <SceneBase project={project}>
-        <StockMesh project={project} opacity={active?.gcode ? 0.85 : 1} />
-        {layers.filter((l) => l.gcode && l.id !== activeLayerId).map((l) => (
-          <Toolpath key={l.id} gcode={l.gcode} showRapid={false} cutColor="#64748b" opacity={0.5} />
-        ))}
-        {active && <ProfileOutline entities={profileEnts} />}
-        {active?.gcode && <Toolpath gcode={active.gcode} layerColors onlyGroups={onlyGroups} />}
+        <StockMesh project={project} opacity={visible.length ? 0.85 : 1} />
+        {active && !hidden.has(active.id) && <ProfileOutline entities={profileEnts} />}
+        {visible.map((l) => <LayerToolpath key={l.id} layer={l} active={l.id === activeLayerId} hidden={hidden} />)}
       </SceneBase>
       <div className="pointer-events-none absolute left-3 top-3 space-y-1 rounded-md bg-black/60 px-3 py-2 text-xs text-gray-300">
         <div className="font-semibold text-white">{project.name}</div>
         <div className="font-mono">{project.stock_x} × {project.stock_y} × {project.stock_z} mm</div>
         <div className="text-gray-500">Origine: centro XY · Z0 superficie</div>
         {active && <div className="pt-1 text-accent">Layer: {active.name} {active.gcode ? '' : '(nessun G-code)'}</div>}
-        {active?.gcode && scopeName && <div className="text-[11px] text-yellow-300">G-code solo del layer di disegno «{scopeName}»</div>}
       </div>
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-gray-400">
         Sinistro: ruota · Destro: pan · Rotella: zoom
-        <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 <span className="ml-2 text-orange-400">━</span> taglio G1{groups.length > 0 && ' (colore del layer)'} <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale</span>
+        <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 (layer attivo) <span className="ml-2 text-orange-400">━</span> taglio G1 (colore del layer di disegno) <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale</span>
       </div>
       <CncToggle />
-      {active?.gcode && <ToolpathLayerLegend groups={groups} hidden={hiddenGroups} setHidden={setHiddenGroups} scopeName={scopeName} />}
+      <LayerList layers={layers} activeLayerId={activeLayerId} hidden={hidden} toggle={toggle} onSelect={onSelect} onCut={onCut} />
     </div>
   )
+}
+
+function LayerToolpath({ layer, active, hidden }) {
+  const groups = useGcodeLayers(layer.gcode)
+  const only = useMemo(() => {
+    const off = groups.filter((g) => hidden.has(`${layer.id}:${g.id}`))
+    return off.length ? new Set(groups.filter((g) => !off.includes(g)).map((g) => g.id)) : null
+  }, [groups, hidden, layer.id])
+  return <Toolpath gcode={layer.gcode} layerColors onlyGroups={only} showRapid={active} opacity={active ? 1 : 0.55} />
 }

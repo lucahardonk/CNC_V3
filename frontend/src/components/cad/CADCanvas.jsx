@@ -1160,8 +1160,16 @@ export default function CADCanvas({
     )
   }
 
-  const toolpathMM = useMemo(() => (toolpath?.diameter > 0 ? toolpathOffsets(geo, toolpath.diameter, toolpath.operation) : []),
-    [geo, toolpath?.diameter, toolpath?.operation])
+  // anteprima percorso: ogni layer di disegno con la SUA fresa/strategia (toolpath.byLayer), altrimenti quella comune
+  const toolpathMM = useMemo(() => {
+    if (!toolpath) return []
+    const groups = {}
+    for (const e of geo) (groups[layerOf(e)] ||= []).push(e)
+    return Object.entries(groups).flatMap(([id, ents]) => {
+      const t = toolpath.byLayer?.[id] || toolpath
+      return t?.diameter > 0 ? toolpathOffsets(ents, t.diameter, t.operation) : []
+    })
+  }, [geo, toolpath])
   const toolpathEls = toolpathMM.length > 0 && (
     <g pointerEvents="none">
       {toolpathMM.map((t, i) => (

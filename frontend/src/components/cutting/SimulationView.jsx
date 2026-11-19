@@ -4,7 +4,8 @@ import * as THREE from 'three'
 import { ArrowLeft, Pause, Play, RefreshCw, RotateCcw } from 'lucide-react'
 import { CncToggle, PROFILE_COLOR, ProfileOutline, SceneBase, StockMesh, Toolpath, useLayerEntities } from '../viewer3d/StockViewer'
 import Button from '../common/Button'
-import { errMsg, Layers } from '../../services/api'
+import { errMsg, Export, Layers } from '../../services/api'
+import { effectiveCut } from '../cad/LayerParams'
 import { useStore } from '../../store/store'
 
 // Limiti della macchina (GRBL 1.1h): velocità massima 1500 mm/min, usata anche per i rapidi G0
@@ -98,9 +99,12 @@ const fmtMin = (m) => { const s = Math.round(m * 60); return `${Math.floor(s / 6
 
 // Simulazione 3D del percorso utensile del layer (nessuna connessione alla macchina).
 // All'apertura il percorso viene ricalcolato dal backend con i parametri di taglio del layer.
-export default function SimulationView({ project, layer, onBack, onLayerUpdated }) {
+// drawLayerId: simula SOLO quel layer di disegno (sue entità e suoi parametri, G-code non salvato).
+export default function SimulationView({ project, layer, drawLayerId = null, onBack, onLayerUpdated }) {
   const notify = useStore((s) => s.notify)
-  const [gcode, setGcode] = useState(layer.gcode || '')
+  const settings = useStore((s) => s.settings)
+  const dl = drawLayerId != null ? (layer.draw_layers || []).find((d) => d.id === drawLayerId) || { id: drawLayerId, name: drawLayerId === '0' ? 'Layer 0' : drawLayerId } : null
+  const [gcode, setGcode] = useState(drawLayerId != null ? '' : layer.gcode || '')
   const [busy, setBusy] = useState(false)
   const [warnings, setWarnings] = useState([])
   const [playing, setPlaying] = useState(false)
@@ -108,23 +112,34 @@ export default function SimulationView({ project, layer, onBack, onLayerUpdated 
   const [t, setT] = useState(0)
   const timeRef = useRef(0)
   const posRef = useRef([0, 0, 0])
-  const profileEnts = useLayerEntities(layer.id)
+  const allEnts = useLayerEntities(layer.id)
+  const profileEnts = useMemo(() => (dl ? allEnts.filter((e) => (e?.data?._meta?.dlayer || '0') === dl.id) : allEnts), [allEnts, dl?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   const tl = useMemo(() => buildTimeline(gcode), [gcode])
-  const dia = Number(layer.tool_diameter) || 3
+  const dia = Number(effectiveCut(layer, dl, settings).tool_diameter) || 3
+  const req = useRef(0)
 
   const compute = async () => {
+    const my = ++req.current
     setBusy(true); setPlaying(false)
     try {
-      const r = await Layers.generate(layer.id, {})
-      setGcode(r.layer.gcode || ''); setWarnings(r.warnings || [])
-      onLayerUpdated?.(r.layer)
+      if (dl) { // solo il layer di disegno: G-code calcolato senza salvarlo
+        const r = await Export.layerGcode(layer.id, { draw_layer_id: dl.id })
+        if (my === req.current) { setGcode(r.gcode || ''); setWarnings(r.warnings || []) }
+      } else {
+        const r = await Layers.generate(layer.id, {})
+        if (my === req.current) { setGcode(r.layer.gcode || ''); setWarnings(r.warnings || []) }
+        onLayerUpdated?.(r.layer)
+      }
     } catch (e) {
-      notify(`Calcolo percorso fallito: ${errMsg(e)}`, 'error')
-    } finally { setBusy(false) }
+      if (my === req.current) { setGcode(''); notify(`Calcolo percorso fallito: ${errMsg(e)}`, 'error') }
+    } finally { if (my === req.current) setBusy(false) }
   }
   useEffect(() => { compute() }, [layer.id]) // eslint-disable-line react-hooks/exhaustive-deps
-  // percorso rigenerato altrove (parametri cambiati nel pannello layer) → la simulazione si aggiorna da sola
-  useEffect(() => { if (layer.gcode && layer.gcode !== gcode) { setGcode(layer.gcode); setWarnings([]) } }, [layer.gcode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // percorso rigenerato altrove (parametri cambiati) → la simulazione si aggiorna da sola
+  useEffect(() => {
+    if (!layer.gcode || layer.gcode === gcode) return
+    if (dl) compute(); else { setGcode(layer.gcode); setWarnings([]) }
+  }, [layer.gcode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // nuovo percorso → si riparte dall'inizio
   useEffect(() => { timeRef.current = 0; setT(0); posRef.current = posAt(tl, 0) }, [tl])
@@ -158,6 +173,7 @@ export default function SimulationView({ project, layer, onBack, onLayerUpdated 
         <Button size="sm" variant="ghost" icon={ArrowLeft} onClick={onBack}>Vista 3D</Button>
         <div className="mx-2 h-5 w-px bg-line" />
         <span className="text-sm text-gray-400">Simulazione layer:</span><span className="text-sm font-semibold text-white">{layer.name}</span>
+        {dl && <span className="flex items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300"><span className="h-2 w-2 rounded-full" style={{ background: dl.color || '#e5e7eb' }} />solo «{dl.name}»</span>}
         <span className="text-xs text-gray-500">· fresa Ø {dia} mm · {tl.moves.length} movimenti</span>
         <Button size="sm" variant="ghost" icon={RefreshCw} className="ml-auto" disabled={busy} onClick={compute}
           title="Ricalcola il percorso con il disegno e i parametri di taglio attuali del layer">{busy ? 'Calcolo…' : 'Ricalcola percorso'}</Button>

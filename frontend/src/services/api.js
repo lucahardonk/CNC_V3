@@ -95,7 +95,8 @@ const downloadNc = async (url, fallback) => {
   }
 }
 // .nc generati con i parametri di taglio salvati nei layer
-Export.layerNc = (layerId) => downloadNc(`/export/layer/${layerId}`, 'layer.nc')
+// dl = id del layer di disegno (opzionale): .nc solo delle sue entità con i suoi parametri
+Export.layerNc = (layerId, dl) => downloadNc(`/export/layer/${layerId}${dl != null ? `?draw_layer_id=${encodeURIComponent(dl)}` : ''}`, 'layer.nc')
 Export.projectNc = (projectId) => downloadNc(`/export/all/${projectId}`, 'progetto_all.nc')
 
 export const exportUrl = '/api/export'

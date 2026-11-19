@@ -10,7 +10,7 @@ export const layerOf = (e) => e?.dlayer || DEFAULT_LAYER_ID
 export function normalizeDrawLayers(list) {
   const out = (Array.isArray(list) ? list : []).filter((l) => l && l.id).map((l) => ({
     id: String(l.id), name: String(l.name || 'Layer'), color: l.color || DEFAULT_LAYER_COLOR,
-    visible: l.visible !== false, locked: !!l.locked,
+    visible: l.visible !== false, locked: !!l.locked, ...(l.cut && typeof l.cut === 'object' ? { cut: l.cut } : {}),
   }))
   const zero = out.find((l) => l.id === DEFAULT_LAYER_ID)
   const rest = out.filter((l) => l.id !== DEFAULT_LAYER_ID)

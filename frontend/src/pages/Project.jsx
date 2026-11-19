@@ -17,6 +17,8 @@ export default function Project() {
   const [layers, setLayers] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [mode, setMode] = useState('view') // view | cad | cutting
+  const [simDl, setSimDl] = useState(null) // simulazione di un solo layer di disegno (null = tutto il layer)
+  const startSim = (lid, dl = null) => { setActiveId(lid); setSimDl(dl ?? null); setMode('cutting') }
   const [toDelete, setToDelete] = useState(null)
 
   useEffect(() => {
@@ -65,19 +67,19 @@ export default function Project() {
         <LayerPanel layers={layers} activeId={activeId} mode={mode}
           onSelect={(lid, show) => { setActiveId(lid); if (show || mode === 'cutting') setMode(mode === 'cutting' && !show ? 'cutting' : 'view') }}
           onEdit={(lid) => { setActiveId(lid); setMode('cad') }}
-          onCut={(lid) => { setActiveId(lid); setMode('cutting') }}
+          onCut={(lid) => startSim(lid)}
           onAdd={addLayer} onDelete={setToDelete} onRename={rename} onMove={move}
           projectId={project.id} material={project.material} onLayerUpdated={updateLayer} />
       )}
       <div className="relative min-w-0 flex-1">
         {mode === 'cad' && active ? (
           <CADView key={active.id} project={project} layer={active} layers={layers} onClose={() => setMode('view')}
-            onLayerUpdated={updateLayer} onStartCutting={() => setMode('cutting')} />
+            onLayerUpdated={updateLayer} onStartCutting={() => startSim(active.id)} />
         ) : mode === 'cutting' && active ? (
-          <SimulationView key={active.id} project={project} layer={active} onBack={() => setMode('view')} onLayerUpdated={updateLayer} />
+          <SimulationView key={`${active.id}:${simDl ?? ''}`} project={project} layer={active} drawLayerId={simDl} onBack={() => setMode('view')} onLayerUpdated={updateLayer} />
         ) : (
           <>
-            <StockViewer project={project} layers={layers} activeLayerId={activeId} />
+            <StockViewer project={project} layers={layers} activeLayerId={activeId} onSelect={setActiveId} onCut={startSim} />
             {layers.length === 0 && (
               <div className="absolute inset-x-0 bottom-16 flex justify-center">
                 <Button variant="primary" onClick={addLayer}>+ Crea il primo layer e inizia a disegnare</Button>

@@ -325,6 +325,8 @@ class Params:
     bridge_height: float = 1.5
     stock_z: float = 20.0
     pocket_direction: str = "horizontal"
+    tool_type: str = "flat"
+    warnings: list[str] = field(default_factory=list)  # avvisi sui parametri (es. oltre la lunghezza utile)
 
 
 @dataclass
@@ -678,6 +680,7 @@ class LayerJob:
     params: Params
     tool_type: str = "flat"
     layer_info: dict[str, dict] | None = None
+    pause: bool | None = None  # None = decide generate_program (pause_between)
 
 
 TOOL_TYPE_NAMES = {"flat": "fresa piatta", "ball": "fresa sferica", "vbit": "fresa a V"}
@@ -688,15 +691,17 @@ def _clean(s: str) -> str:
     return str(s).replace("\n", " ").replace("(", "[").replace(")", "]").strip()
 
 
-def generate_program(jobs: list[LayerJob], title: str, pause_between: bool = True) -> Result:
-    """Programma G-code con uno o più layer in sequenza, compatibile GRBL 1.1h (niente M6):
+def generate_program(jobs: list[LayerJob], title: str, pause_between: bool | str = True) -> Result:
+    """Programma G-code con uno o più job (layer) in sequenza, compatibile GRBL 1.1h (niente M6):
 
         G21 G90 G17 G94
-        per ogni layer:  ; Layer  /  ; T<n> (commento)  /  M5  /  G0 Z<safe>  /  M0 (cambio punta)
-                         G0 X0 Y0  /  M3 S<rpm>  /  G4 P2  /  percorso multi-passata  /  M5  /  G0 Z<safe>
-        M2
+        per ogni job:  ; Layer  /  ; T<n> (commento)  /  M5  /  G0 Z<safe>  /  M0 (cambio punta)
+                       G0 X0 Y0  /  M3 S<rpm>  /  G4 P2  /  percorso multi-passata
+        M5 / G0 X0 Y0 / M2
 
-    pause_between=False omette l'M0 (utile per l'export di un singolo layer)."""
+    pause_between: True = M0 prima di ogni job; False = mai; "change" = solo quando cambia la fresa
+    (diametro/tipo) rispetto al job precedente: con la stessa fresa si prosegue senza fermare il mandrino.
+    job.pause (se non None) prevale."""
     if not jobs:
         raise ValueError("Nessun layer da esportare")
     out = [
@@ -710,10 +715,18 @@ def generate_program(jobs: list[LayerJob], title: str, pause_between: bool = Tru
     rapid = cut = t = 0.0
     warnings: list[str] = []
     pos = (0.0, 0.0)
+    prev: Params | None = None
     for job in jobs:
         p = job.params
+        if job.pause is not None:
+            pause = job.pause
+        elif pause_between == "change":
+            pause = prev is not None and (prev.tool_diameter, prev.tool_type) != (p.tool_diameter, p.tool_type)
+        else:
+            pause = bool(pause_between)
+        cont = prev is not None and not pause  # stessa fresa: prosegue dal punto in cui si trova
         try:
-            m = generate_moves(job.entities, p, job.layer_info, start_pos=(0.0, 0.0))
+            m = generate_moves(job.entities, p, job.layer_info, start_pos=pos if cont else (0.0, 0.0))
         except ValueError as exc:
             raise ValueError(f"Layer \"{job.name}\": {exc}") from exc
         warnings += [f"Layer \"{job.name}\": {w}" for w in m.warnings]
@@ -723,16 +736,22 @@ def generate_program(jobs: list[LayerJob], title: str, pause_between: bool = Tru
             f"; T{job.number} - {TOOL_TYPE_NAMES.get(job.tool_type, job.tool_type)} D={_f(p.tool_diameter)}mm"
             f" | {OP_NAMES.get(p.operation, p.operation)} | F{_f(p.feed_rate)} S{int(p.spindle_rpm)}"
             f" | Z {_f(-p.depth_total)}mm in {len(m.levels)} passate da {_f(p.depth_per_pass)}mm",
-            "M5",
-            f"G0 Z{_f(p.safe_height)}",
         ]
-        if pause_between:
-            out.append(f"M0 ; cambio punta: monta T{job.number} D={_f(p.tool_diameter)}mm, poi riprendi (cycle start)")
-        out += ["G0 X0 Y0", f"M3 S{int(p.spindle_rpm)}", "G4 P2", *m.lines, "M5", f"G0 Z{_f(p.safe_height)}"]
-        rapid += m.rapid_len + math.dist(pos, (0.0, 0.0))
+        if cont:
+            if int(p.spindle_rpm) != int(prev.spindle_rpm):
+                out.append(f"M3 S{int(p.spindle_rpm)}")
+        else:
+            out += ["M5", f"G0 Z{_f(p.safe_height)}"]
+            if pause:
+                out.append(f"M0 ; cambio punta: monta T{job.number} D={_f(p.tool_diameter)}mm, poi riprendi (cycle start)")
+            out += ["G0 X0 Y0", f"M3 S{int(p.spindle_rpm)}", "G4 P2"]
+            rapid += math.dist(pos, (0.0, 0.0))
+        out += m.lines
+        rapid += m.rapid_len
         pos = m.end_pos
         cut += m.cut_len
         t += m.cut_time
-    out += ["", "G0 X0 Y0", "M2"]
+        prev = p
+    out += ["", "M5", f"G0 Z{_f(prev.safe_height)}", "G0 X0 Y0", "M2"]
     return Result(gcode="\n".join(out) + "\n", line_count=len(out), path_length_mm=round(cut + rapid, 1),
                   cut_length_mm=round(cut, 1), estimated_time_min=round(t + rapid / 3000.0, 2), warnings=warnings)

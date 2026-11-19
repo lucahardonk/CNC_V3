@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Copy, FileUp, Layers as LayersIcon, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Copy, Scissors, FileUp, Layers as LayersIcon, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
 import CADCanvas from './CADCanvas'
 import Toolbar from './Toolbar'
 import Modal from '../common/Modal'
@@ -9,6 +9,7 @@ import { Dxf, errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 import { arcSweep, catmullRomPoints, isDim, rad, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
 import DrawLayerPanel, { NewLayerModal } from './DrawLayerPanel'
+import LayerParams, { effectiveCut } from './LayerParams'
 import DxfImportModal from './DxfImportModal'
 import TextTool from './TextTool'
 import SvgImportTool from './SvgImportTool'
@@ -147,6 +148,26 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
     }, 400)
   }, [layer.id, onLayerUpdated, notify])
   const updateDrawLayers = (fn) => setDrawLayers((ls) => { const next = normalizeDrawLayers(fn(ls)); saveDrawLayers(next); return next })
+  // parametri di taglio per layer di disegno (draw_layers[i].cut): salvati subito con la lista completa
+  const drawLayersRef = useRef(drawLayers)
+  drawLayersRef.current = drawLayers
+  const withCut = (ls, id, ch) => ls.map((x) => (x.id === id ? { ...x, cut: { ...(x.cut || {}), ...ch } } : x))
+  const [paramsOpen, setParamsOpen] = useState(true)
+  const activeDrawLayer = drawLayers.find((l) => l.id === activeDLRef.current) || drawLayers[0]
+  const cutProps = activeDrawLayer.id === DEFAULT_LAYER_ID ? {} : {
+    persist: (ch) => {
+      clearTimeout(dlTimer.current) // la lista inviata qui contiene già le altre modifiche in sospeso
+      const next = withCut(drawLayersRef.current, activeDrawLayer.id, ch)
+      drawLayersRef.current = next
+      setDrawLayers(next)
+      return Layers.update(layer.id, { draw_layers: next })
+    },
+    onLocal: (ch) => setDrawLayers((ls) => withCut(ls, activeDrawLayer.id, ch)),
+  }
+  const toolpathPreview = useMemo(() => ({
+    diameter: Number(layer.tool_diameter) || 0, operation: layer.operation,
+    byLayer: Object.fromEntries(drawLayers.map((d) => { const c = effectiveCut(layer, d, settings); return [d.id, { diameter: Number(c.tool_diameter) || 0, operation: c.operation }] })),
+  }), [layer, drawLayers, settings])
   const dlCounts = useMemo(() => {
     const c = {}
     for (const e of entities) if (!isConstraint(e)) c[layerOf(e)] = (c[layerOf(e)] || 0) + 1
@@ -316,7 +337,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
               onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} pickLine={parallelFor ? onPickParallel : null}
               drawLayers={drawLayers} fitRequest={fitRequest} onMeasure={setCanvasMeasure}
-              toolpath={{ diameter: Number(layer.tool_diameter) || 0, operation: layer.operation }}
+              toolpath={toolpathPreview}
               overlay={placement ? (view) => <PlacementOverlay view={view} {...placement} /> : null} />
           )}
           {vectorTool === 'text' && <TextTool center={{ x: 0, y: 0 }} notify={notify} setPlacement={setPlacement}
@@ -332,6 +353,20 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             onAdd={addDrawLayer} onDelete={deleteDrawLayer} onAssignSelection={assignSelection}
             onOpenAssign={openAssign} />
           <div className="min-h-0 flex-1 overflow-y-auto border-t border-line p-3">
+          <div className="mb-3 border-b border-line pb-3" data-testid="cad-cut-params">
+            <button onClick={() => setParamsOpen((o) => !o)} className="mb-2 flex w-full items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-white">
+              {paramsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<Scissors size={13} /> Parametri di taglio
+              <span className="ml-auto flex min-w-0 items-center gap-1 normal-case tracking-normal text-gray-300">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: activeDrawLayer.color }} /><span className="truncate">{activeDrawLayer.name}</span>
+              </span>
+            </button>
+            {paramsOpen && <>
+              <p className="mb-2 text-[10px] leading-snug text-gray-500">
+                {activeDrawLayer.id === DEFAULT_LAYER_ID ? 'Layer 0 = parametri del layer di lavorazione.' : 'Percorso indipendente: solo le entità di questo layer, con questi parametri.'} Le modifiche si salvano e aggiornano da sole percorso e simulazione.
+              </p>
+              <LayerParams layer={layer} drawLayer={activeDrawLayer} material={project.material} onLayerUpdated={onLayerUpdated} {...cutProps} />
+            </>}
+          </div>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400"><Ruler size={13} /> Proprietà / Misure</div>
           {canvasMeasure?.distance != null ? (
             <div className="mb-3 rounded-md border border-cyan-500/50 bg-cyan-500/10 p-2 text-xs">
