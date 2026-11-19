@@ -16,11 +16,14 @@ const CUT_FIELDS = {
   z_safe: ['Z sicurezza (mm)', 0.5, (v) => v >= 0, 'Quota Z per i movimenti rapidi (G0) sopra il pezzo.'],
   z_depth: ['Profondità finale (mm)', 0.1, (v) => v < 0, 'Quota Z finale del taglio, negativa (Z0 = superficie del pezzo).'],
   z_pass_depth: ['Passata per volta (mm)', 0.1, (v) => v > 0, 'Profondità asportata per ogni passata: più passate fino alla profondità finale.'],
+  plunge_rate: ['Plunge (mm/min)', 10, (v) => v > 0, 'Velocità di affondo in Z (G1 Z ... F). Deve essere più bassa del feed.'],
+  step_over: ['Step-over (0-1)', 0.05, (v) => v > 0 && v <= 1, 'Passo laterale della tasca come frazione del diametro (0.4 = 40%).'],
+  bridge_height: ['Altezza ponticelli (mm)', 0.1, (v) => v >= 0, 'Materiale lasciato sotto i ponticelli disegnati (dal fondo del taglio). Usato solo se il disegno contiene ponticelli.'],
 }
 const fieldWarn = (k, v) => (k === 'feed_rate' && v > MACHINE_LIMITS.feed ? `Oltre il massimo macchina (${MACHINE_LIMITS.feed} mm/min)`
   : k === 'spindle_rpm' && v > MACHINE_LIMITS.rpm ? `Oltre il massimo macchina (${MACHINE_LIMITS.rpm} RPM)` : null)
 
-export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, onCut, onAdd, onDelete, onRename, onMove, projectId, onLayerUpdated }) {
+export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, onCut, onAdd, onDelete, onRename, onMove, projectId, material, onLayerUpdated }) {
   const tools = useStore((s) => s.tools)
   const notify = useStore((s) => s.notify)
   const [editing, setEditing] = useState(null)
@@ -61,7 +64,7 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
                 </Tooltip>
               </div>
               <div className="ml-7 mt-1 text-[11px] text-gray-500">
-                {l.gcode ? `${OPERATION_NAMES[l.operation]} · ${tool ? `Ø${tool.diameter}` : '?'} · ${l.params?.depth_total ?? '?'} mm` : `${l.entity_count} entità · percorso da calcolare`}
+                {OPERATION_NAMES[l.operation] || l.operation} · {tool ? `${tool.name} · ` : ''}Ø{l.tool_diameter} · {Math.abs(Number(l.z_depth) || 0)} mm{!l.gcode && ` · ${l.entity_count} entità`}
               </div>
               <div className="ml-7 mt-2 flex items-center gap-1">
                 <Btn tip="Modifica disegno (CAD)" onClick={() => onEdit(l.id)} active={mode === 'cad' && active}><Pencil size={13} /></Btn>
@@ -76,7 +79,7 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
                   <Btn tip="Elimina layer" onClick={() => onDelete(l)} red><Trash2 size={13} /></Btn>
                 </div>
               </div>
-              {open.has(l.id) && <CutParams layer={l} onLayerUpdated={onLayerUpdated} notify={notify} />}
+              {open.has(l.id) && <CutParams layer={l} material={material} onLayerUpdated={onLayerUpdated} notify={notify} />}
             </div>
           )
         })}
@@ -99,32 +102,102 @@ const Btn = ({ children, tip, onClick, disabled, active, green, red }) => (
   </Tooltip>
 )
 
-// Parametri di taglio di un layer: ogni modifica valida viene salvata subito (PATCH, debounce 300 ms)
-function CutParams({ layer, onLayerUpdated, notify }) {
+// Parametri salvati in layer.params (non sono colonne del layer)
+const PARAM_KEYS = new Set(['plunge_rate', 'step_over', 'pocket_direction', 'bridge_height'])
+const OP_TIPS = {
+  profile_outside: 'Fuori dalla linea: la fresa gira all\'esterno del contorno, il pezzo mantiene le dimensioni disegnate.',
+  profile_inside: 'Dentro la linea: la fresa gira all\'interno del contorno, il foro mantiene le dimensioni disegnate.',
+  profile_on: 'Sulla linea: il centro fresa segue esattamente la linea (incisioni, linee aperte).',
+  pocket: 'Svuota tutta l\'area chiusa fino alla profondità finale.',
+}
+const POCKET_DIRS = { horizontal: 'Righe orizzontali (zig-zag X)', vertical: 'Righe verticali (zig-zag Y)', contour: 'Contorno (offset concentrici)' }
+const toolTypeOf = (t) => (/ball|sfer/i.test(t?.type || '') ? 'ball' : /v[-_ ]?bit|^v$/i.test(t?.type || '') ? 'vbit' : 'flat')
+
+// Parametri di taglio di un layer: ogni modifica valida viene salvata (PATCH, debounce 400 ms) e il
+// percorso viene rigenerato subito dopo (Layers.generate) → 3D e simulazione si aggiornano da soli.
+function CutParams({ layer, material, onLayerUpdated, notify }) {
+  const tools = useStore((s) => s.tools)
+  const materials = useStore((s) => s.materials)
+  const settings = useStore((s) => s.settings)
   const [draft, setDraft] = useState({})
+  const [regen, setRegen] = useState(null) // null | 'busy' | messaggio di errore
   const pending = useRef({})
   const timer = useRef(null)
-  const flush = async () => {
+  const latest = useRef(layer)
+  latest.current = layer
+  const queue = useRef(Promise.resolve()) // richieste in serie: mai PATCH/generate concorrenti
+  const seq = useRef(0)
+  const lastParams = useRef(null) // params dell'ultimo salvataggio (anche se la sua risposta UI è stata scartata)
+
+  const flush = () => {
     clearTimeout(timer.current)
-    const body = pending.current
+    const changes = pending.current
     pending.current = {}
-    if (!Object.keys(body).length) return
-    try { onLayerUpdated?.(await Layers.patch(layer.id, body)) } catch (e) { notify(`Salvataggio parametri fallito: ${errMsg(e)}`, 'error') }
+    if (!Object.keys(changes).length) return queue.current
+    const my = ++seq.current
+    queue.current = queue.current.then(async () => {
+      const body = {}, par = {}
+      for (const [k, v] of Object.entries(changes)) (PARAM_KEYS.has(k) ? par : body)[k] = v
+      if (Object.keys(par).length) body.params = { ...(lastParams.current || latest.current.params || {}), ...par }
+      let saved
+      try { saved = await Layers.patch(layer.id, body) } catch (e) { notify(`Salvataggio parametri fallito: ${errMsg(e)}`, 'error'); return }
+      lastParams.current = saved.params
+      if (my !== seq.current) return // è già in coda una modifica più recente: rigenera quella
+      onLayerUpdated?.(saved)
+      if (!saved.entity_count) return
+      setRegen('busy')
+      try {
+        const r = await Layers.generate(layer.id, {})
+        lastParams.current = r.layer.params
+        if (my !== seq.current) return // risposta superata da una modifica successiva: ignorata
+        onLayerUpdated?.(r.layer); setRegen(null)
+      } catch (e) { if (my === seq.current) setRegen(errMsg(e)) }
+    })
+    return queue.current
   }
   useEffect(() => () => { flush() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const save = (k, v) => {
-    pending.current = { ...pending.current, [k]: v }
+  const save = (changes, now = false) => {
+    pending.current = { ...pending.current, ...changes }
     clearTimeout(timer.current)
-    timer.current = setTimeout(flush, 300)
+    if (now) flush(); else timer.current = setTimeout(flush, 400)
+  }
+
+  const prm = layer.params || {}
+  const tool = tools.find((t) => t.id === layer.tool_id)
+  const values = {
+    ...layer,
+    plunge_rate: prm.plunge_rate ?? Math.round(Math.max(50, (Number(layer.feed_rate) || 600) * 0.3)),
+    step_over: prm.step_over ?? tool?.step_over ?? 0.4,
+    bridge_height: prm.bridge_height ?? settings?.cutting?.bridge_height ?? 1.5,
+    pocket_direction: prm.pocket_direction || 'horizontal',
   }
   const onNum = (k, raw) => {
     setDraft((d) => ({ ...d, [k]: raw }))
     const v = Number(raw)
-    if (raw !== '' && Number.isFinite(v) && CUT_FIELDS[k][2](v)) save(k, v)
+    if (raw === '' || !Number.isFinite(v) || !CUT_FIELDS[k][2](v)) return
+    // diametro cambiato a mano → non corrisponde più alla fresa della libreria
+    save(k === 'tool_diameter' && tool && v !== Number(tool.diameter) ? { [k]: v, tool_id: null } : { [k]: v })
   }
+  const choose = (k, v) => { onLayerUpdated?.({ ...layer, [k]: v, ...(PARAM_KEYS.has(k) ? { params: { ...prm, [k]: v } } : {}) }); save({ [k]: v }, true) }
+  const applyTool = (id) => {
+    const t = tools.find((x) => x.id === id)
+    if (!t) { choose('tool_id', null); return }
+    const mat = materials?.[material] || {}
+    // come la vecchia modale "Genera G-code": tra materiale e utensile vale il valore più prudente
+    const pick = (k) => { const c = [mat[k], t[k]].filter((v) => v != null).map(Number); return c.length ? Math.min(...c) : undefined }
+    const ch = { tool_id: t.id, tool_diameter: Number(t.diameter), tool_type: toolTypeOf(t) }
+    for (const [k, v] of [['feed_rate', pick('feed_rate')], ['plunge_rate', pick('plunge_rate')], ['step_over', pick('step_over')],
+      ['spindle_rpm', t.spindle_rpm ?? mat.spindle_rpm]]) if (v != null && Number.isFinite(Number(v))) ch[k] = k === 'spindle_rpm' ? Math.round(v) : Number(v)
+    setDraft({})
+    const par = Object.fromEntries(Object.entries(ch).filter(([k]) => PARAM_KEYS.has(k)))
+    onLayerUpdated?.({ ...layer, ...Object.fromEntries(Object.entries(ch).filter(([k]) => !PARAM_KEYS.has(k))), params: { ...prm, ...par } })
+    save(ch, true)
+    notify(`Fresa «${t.name}» applicata: diametro, feed, plunge e RPM aggiornati`, 'success')
+  }
+
   const num = (k) => {
     const [label, step, valid, tip] = CUT_FIELDS[k]
-    const raw = draft[k] ?? String(layer[k] ?? '')
+    const raw = draft[k] ?? String(values[k] ?? '')
     const v = Number(raw)
     const invalid = raw === '' || !Number.isFinite(v) || !valid(v)
     const warn = !invalid && fieldWarn(k, v)
@@ -138,25 +211,60 @@ function CutParams({ layer, onLayerUpdated, notify }) {
       </label>
     )
   }
+  const lbl = (text, tip) => <Tooltip text={tip}><span className="mb-0.5 block cursor-help text-[10px] text-gray-500">{text}</span></Tooltip>
+  const pocket = layer.operation === 'pocket'
   const passes = Math.max(1, Math.ceil(Math.abs(Number(layer.z_depth) || 0) / (Number(layer.z_pass_depth) || 1) - 1e-9))
   return (
     <div className="ml-7 mt-2 space-y-2 border-t border-line pt-2" onClick={(e) => e.stopPropagation()}>
+      <label className="block">
+        {lbl('Fresa (libreria utensili)', 'Scegli una fresa predefinita: applica diametro, tipo, feed, plunge, RPM e step-over. I valori restano modificabili a mano.')}
+        <select className="input py-1 text-xs" value={layer.tool_id && tool ? layer.tool_id : ''} onChange={(e) => applyTool(e.target.value)}>
+          <option value="">— Personalizzata —</option>
+          {tools.map((t) => <option key={t.id} value={t.id}>{t.name} (Ø{t.diameter})</option>)}
+        </select>
+      </label>
+      <div>
+        {lbl('Strategia', OP_TIPS[layer.operation])}
+        <div className="grid grid-cols-2 gap-1">
+          {Object.entries(OPERATION_NAMES).map(([k, n]) => (
+            <Tooltip key={k} text={OP_TIPS[k]}>
+              <button onClick={() => choose('operation', k)}
+                className={`w-full rounded border px-1.5 py-1 text-[11px] transition ${layer.operation === k ? 'border-accent bg-accent/10 text-white' : 'border-line text-gray-400 hover:border-gray-500'}`}>
+                {{ profile_outside: 'Fuori linea', profile_inside: 'Dentro linea', profile_on: 'Sulla linea', pocket: 'Tasca (pocket)' }[k] || n}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
+      </div>
+      {pocket && (
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            {lbl('Riempimento tasca', 'Come viene svuotata l\'area: righe a zig-zag oppure offset concentrici dal contorno.')}
+            <select className="input py-1 text-xs" value={values.pocket_direction} onChange={(e) => choose('pocket_direction', e.target.value)}>
+              {Object.entries(POCKET_DIRS).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
+            </select>
+          </label>
+          {num('step_over')}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         {num('tool_diameter')}
         <label className="block">
           <span className="mb-0.5 block text-[10px] text-gray-500">Tipo fresa</span>
-          <select className="input py-1 text-xs" value={layer.tool_type || 'flat'}
-            onChange={(e) => { onLayerUpdated?.({ ...layer, tool_type: e.target.value }); save('tool_type', e.target.value); flush() }}>
+          <select className="input py-1 text-xs" value={layer.tool_type || 'flat'} onChange={(e) => choose('tool_type', e.target.value)}>
             {Object.entries(TOOL_TYPES).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
           </select>
         </label>
         {num('feed_rate')}
+        {num('plunge_rate')}
         {num('spindle_rpm')}
         {num('z_safe')}
         {num('z_depth')}
         {num('z_pass_depth')}
+        {!pocket && num('bridge_height')}
       </div>
-      <p className="text-[10px] text-gray-500">{OPERATION_NAMES[layer.operation] || layer.operation} · {passes} passat{passes === 1 ? 'a' : 'e'} fino a Z{layer.z_depth}</p>
+      <p className="text-[10px] text-gray-500">{OPERATION_NAMES[layer.operation] || layer.operation}{pocket ? ` (${POCKET_DIRS[values.pocket_direction]})` : ''} · {passes} passat{passes === 1 ? 'a' : 'e'} fino a Z{layer.z_depth}</p>
+      {regen && <p className={`text-[10px] ${regen === 'busy' ? 'text-sky-400' : 'text-red-400'}`}>{regen === 'busy' ? 'Aggiornamento percorso...' : `⚠ Percorso non aggiornato: ${regen}`}</p>}
     </div>
   )
 }

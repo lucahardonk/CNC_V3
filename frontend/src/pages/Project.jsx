@@ -67,7 +67,7 @@ export default function Project() {
           onEdit={(lid) => { setActiveId(lid); setMode('cad') }}
           onCut={(lid) => { setActiveId(lid); setMode('cutting') }}
           onAdd={addLayer} onDelete={setToDelete} onRename={rename} onMove={move}
-          projectId={project.id} onLayerUpdated={updateLayer} />
+          projectId={project.id} material={project.material} onLayerUpdated={updateLayer} />
       )}
       <div className="relative min-w-0 flex-1">
         {mode === 'cad' && active ? (

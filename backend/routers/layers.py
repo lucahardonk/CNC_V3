@@ -192,7 +192,7 @@ def layer_params(project: Project, l: Layer, body: GenerateRequest | None = None
     params = Params(
         operation=body.operation or l.operation,
         tool_diameter=diameter,
-        tool_name=(tool.get("name", tool_id) if (body.tool_id and tool) else
+        tool_name=(tool.get("name", tool_id) if tool else
                    {"flat": "Fresa piatta", "ball": "Fresa sferica", "vbit": "Fresa a V"}.get(_cut(l, "tool_type"), "Fresa")),
         material=mat.get("name", project.material),
         feed_rate=feed,
@@ -202,8 +202,9 @@ def layer_params(project: Project, l: Layer, body: GenerateRequest | None = None
         depth_per_pass=first(body.depth_per_pass, default=float(_cut(l, "z_pass_depth"))),
         step_over=first(body.step_over, prev.get("step_over"), (tool or {}).get("step_over"), default=0.4),
         safe_height=first(body.safe_height, default=float(_cut(l, "z_safe"))),
-        bridge_height=first(body.bridge_height, cutting.get("bridge_height"), default=1.5),
-        stock_z=project.stock_z, pocket_direction=body.pocket_direction,
+        bridge_height=first(body.bridge_height, prev.get("bridge_height"), cutting.get("bridge_height"), default=1.5),
+        stock_z=project.stock_z,
+        pocket_direction=body.pocket_direction or prev.get("pocket_direction") or "horizontal",
     )
     return params, (tool_id if tool else None)
 
@@ -249,7 +250,7 @@ async def generate(layer_id: str, body: GenerateRequest, db: AsyncSession = Depe
                 "feed_rate": params.feed_rate, "plunge_rate": params.plunge_rate,
                 "spindle_rpm": params.spindle_rpm, "depth_per_pass": params.depth_per_pass,
                 "step_over": params.step_over, "safe_height": params.safe_height,
-                "bridge_height": params.bridge_height,
+                "bridge_height": params.bridge_height, "pocket_direction": params.pocket_direction,
                 "draw_layer_id": scope["id"] if scope else None,
                 "draw_layer_name": scope.get("name") if scope else None}
     # i valori usati diventano i parametri di taglio del layer (indipendenti dagli altri layer)

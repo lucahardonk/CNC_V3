@@ -126,7 +126,7 @@ class GenerateRequest(BaseModel):
     step_over: Optional[float] = Field(default=None, gt=0, le=1)
     safe_height: Optional[float] = None
     bridge_height: Optional[float] = None
-    pocket_direction: Literal["horizontal", "vertical", "contour"] = "horizontal"
+    pocket_direction: Optional[Literal["horizontal", "vertical", "contour"]] = None  # None = quella salvata nel layer
     # None = tutti i layer di disegno visibili; altrimenti solo le entità di quel layer di disegno
     draw_layer_id: Optional[str] = None
 

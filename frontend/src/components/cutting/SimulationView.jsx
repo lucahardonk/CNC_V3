@@ -123,6 +123,8 @@ export default function SimulationView({ project, layer, onBack, onLayerUpdated 
     } finally { setBusy(false) }
   }
   useEffect(() => { compute() }, [layer.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  // percorso rigenerato altrove (parametri cambiati nel pannello layer) → la simulazione si aggiorna da sola
+  useEffect(() => { if (layer.gcode && layer.gcode !== gcode) { setGcode(layer.gcode); setWarnings([]) } }, [layer.gcode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // nuovo percorso → si riparte dall'inizio
   useEffect(() => { timeRef.current = 0; setT(0); posRef.current = posAt(tl, 0) }, [tl])
