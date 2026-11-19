@@ -15,11 +15,11 @@ esp32_wireless_bridge/
 
 ---
 
-## Cablaggio (⚠ RX su D7)
+## Cablaggio (⚠ RX su D7, TX su D4 da v2.5)
 
 | NodeMCU | GPIO | BSS138 LV | BSS138 HV | Arduino Uno |
 |---|---|---|---|---|
-| **D5** (TX ESP) | GPIO14 | LV1 | HV1 | **pin 0 (RX)** |
+| **D4** (TX ESP, Serial1) | GPIO2 | LV1 | HV1 | **pin 0 (RX)** |
 | **D7** (RX ESP) | GPIO13 | LV2 | HV2 | **pin 1 (TX)** |
 | 3V3 | — | LV | — | — |
 | — | — | — | HV | 5V (non AREF) |
@@ -28,8 +28,10 @@ esp32_wireless_bridge/
 - Rispetto al primo test **la ricezione si sposta da D6 a D7**: D7 è il pin RX della UART
   *hardware* dell'ESP8266 (spostata con `Serial.swap()`). La SoftwareSerial perdeva caratteri
   sulle risposte lunghe (es. `$$`) quando il WiFi lavorava; la UART hardware ha FIFO e buffer
-  da 2 KB e non ne risente. La trasmissione resta in software su D5 (con interrupt
-  disattivati durante ogni byte, quindi con timing preciso).
+  da 2 KB e non ne risente.
+- **Da v2.5 anche la trasmissione è hardware**: Serial1 (UART1, solo TX) su **D4 (GPIO2)**.
+  Sposta il filo che andava da **D5** a LV1 su **D4**. Niente più SoftwareSerial.
+  D4 è anche il LED blu della scheda: lampeggia quando si inviano comandi (normale).
 - **D8 (GPIO15) non va collegato**: deve stare basso all'accensione, altrimenti l'ESP non parte.
 - Il TX dell'Uno (5 V) passa **sempre** dal level shifter. GND in comune.
 - Mentre lavora l'ESP non aprire la porta seriale dell'Uno dal PC (il suo chip USB usa pin 0/1).
@@ -38,7 +40,7 @@ esp32_wireless_bridge/
 - **Caricare il firmware via USB funziona sempre** (lo swap avviene solo dopo l'avvio).
 - Il Monitor Seriale mostra solo il banner iniziale; poi la UART serve a GRBL.
   Tutto il traffico GRBL è visibile nella **console della pagina web**.
-  I log di debug escono su D4 (GPIO2, Serial1, solo TX) se ti servono con un adattatore USB-seriale.
+  Non ci sono più log di debug seriali (D4 ora è il TX verso GRBL).
 
 ---
 
@@ -50,7 +52,7 @@ esp32_wireless_bridge/
 2. **Librerie** (Gestore librerie):
    - **WebSockets** di *Markus Sattler* (testato 2.7.2)
    - **ArduinoJson** di *Benoit Blanchon* (testato 7.4.3, serve la 7.x)
-   - EspSoftwareSerial e LittleFS sono già inclusi nel core.
+   - LittleFS è già incluso nel core.
 3. **Strumenti**: Scheda *NodeMCU 1.0 (ESP-12E Module)*, CPU *160 MHz*,
    Flash Size *4MB (FS:2MB OTA:~1019KB)*, porta del NodeMCU.
 4. Apri `esp32_wireless_bridge.ino` → **Carica**.
@@ -120,6 +122,6 @@ In console ogni `error:N` / `ALARM:N` di GRBL viene mostrato con il suo signific
 | Problema | Soluzione |
 |---|---|
 | Stato sempre *Disconnected* | Filo GRBL TX → HV2/LV2 → **D7**, GND comune, LV a 3,3 V e HV a 5 V |
-| GRBL non esegue i comandi | Filo D5 → LV1/HV1 → pin 0 dell'Uno; porta seriale dell'Uno chiusa sul PC |
-| L'ESP non parte con i fili collegati | Qualcosa è collegato a D8 (GPIO15) o D3/D4 a massa |
+| GRBL non esegue i comandi | Filo D4 → LV1/HV1 → pin 0 dell'Uno; porta seriale dell'Uno chiusa sul PC |
+| L'ESP non parte con i fili collegati | Qualcosa è collegato a D8 (GPIO15) o D3/D4 tenuti a massa (D4 va solo a LV1) |
 | Il baud va cambiato | In GRBL 1.1h si cambia solo ricompilando GRBL (`BAUD_RATE` in `grbl/config.h`), poi `GRBL_BAUD` in `config.h` |

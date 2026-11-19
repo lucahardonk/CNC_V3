@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  esp32_wireless_bridge v2.4 — NodeMCU 1.0 (ESP8266 / ESP-12E)
+//  esp32_wireless_bridge v2.5 — NodeMCU 1.0 (ESP8266 / ESP-12E)
 //  Bridge WiFi + interfaccia web completa per GRBL 1.1h su Arduino Uno
 //
 //  Librerie (Library Manager):
 //    • WebSockets   di Markus Sattler (Links2004)  — testato 2.7.2
 //    • ArduinoJson  di Benoit Blanchon             — testato 7.4.3
-//    • EspSoftwareSerial e LittleFS: inclusi nel core ESP8266 (testato 3.1.2)
+//    • LittleFS: incluso nel core ESP8266 (testato 3.1.2)
 //
 //  Scheda: "NodeMCU 1.0 (ESP-12E Module)", CPU 160 MHz,
 //          Flash "4MB (FS:2MB OTA:~1019KB)"
@@ -15,29 +15,60 @@
 //  salvare il file G-code e si formatta da solo al primo avvio.
 //  Dopo aver modificato data/index.html rigenerare index_html.h con
 //      python3 tools/embed_html.py
+//
+//  Collegamenti (tramite level shifter 3.3 V ⇄ 5 V):
+//    RX GRBL = UART0 hardware spostata su GPIO13 (D7) ← LV2/HV2 ← Uno pin 1
+//    TX GRBL = Serial1 hardware (UART1, solo TX) su GPIO2 (D4) → LV1/HV1 → Uno pin 0
+//  Nessun log seriale di debug: tutto il traffico è nella console web.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <WebSocketsServer.h>
-#include <SoftwareSerial.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
-#include <deque>
 
 #include "config.h"
 #include "index_html.h"
-
-#define DBG Serial1                      // log su GPIO2 (D4), solo TX
 
 static const char* GCODE_PATH  = "/gcode.nc";
 static const char* AIRCUT_PATH = "/aircut.nc";   // percorso ingombro (temporaneo)
 static const size_t GRBL_MAX_LINE = 80;  // LINE_BUFFER_SIZE di GRBL 1.1
 
-// ── Seriale GRBL: RX = UART0 hardware (swap su D7), TX = SoftwareSerial D5 ──
+// ── Seriale GRBL: RX = UART0 hardware (swap su D7), TX = Serial1 su D4 ──
 #define grblRx Serial
-SoftwareSerial grblTx;
+#define grblTx Serial1
+
+// ── Coda righe inviate a GRBL in attesa di ok/error ─────────────────────────
+// Ring buffer statico (niente allocazioni heap per riga): lunghezza in byte
+// (per il character counting) + testo (per mostrare la riga in errore).
+// Con il buffer RX di GRBL da 127 byte le righe in volo sono al massimo ~60;
+// se la coda è piena loopStream() attende un ok prima di inviare altro.
+#define PENDING_BUF 64
+static uint8_t pendingLenBuf[PENDING_BUF];
+static char    pendingTxtBuf[PENDING_BUF][GRBL_MAX_LINE];
+static uint8_t pqHead = 0, pqCount = 0;   // indice del più vecchio, numero elementi
+
+static inline bool pqFull()  { return pqCount >= PENDING_BUF; }
+static inline bool pqEmpty() { return pqCount == 0; }
+static inline void pqClear() { pqHead = 0; pqCount = 0; }
+// Accoda una riga; testo troncato a GRBL_MAX_LINE-1. Se piena viene ignorata.
+static bool pqPush(int len, const char* txt) {
+  if (pqFull()) return false;
+  uint8_t i = (pqHead + pqCount) % PENDING_BUF;
+  pendingLenBuf[i] = (uint8_t)(len > 255 ? 255 : len);
+  strlcpy(pendingTxtBuf[i], txt ? txt : "", GRBL_MAX_LINE);
+  pqCount++;
+  return true;
+}
+static inline int pqFrontLen() { return pqEmpty() ? 0 : pendingLenBuf[pqHead]; }
+static inline const char* pqFrontTxt() { return pqEmpty() ? "" : pendingTxtBuf[pqHead]; }
+static void pqPop() {
+  if (pqEmpty()) return;
+  pqHead = (pqHead + 1) % PENDING_BUF;
+  pqCount--;
+}
 
 ESP8266WebServer httpServer(HTTP_PORT);
 WebSocketsServer wsServer(WS_PORT);
@@ -73,8 +104,7 @@ struct StreamCtrl {
   int     sent     = 0;
   int     acked    = 0;
   int     txInFlight = 0;                // byte stimati nel buffer RX di GRBL
-  std::deque<int> pendingLen;            // lunghezze righe inviate senza ok
-  std::deque<String> pendingTxt;         // testo delle stesse righe (per errori)
+  // righe inviate senza ok: vedi ring buffer pq* sopra
   int     flushAcks = 0;                 // ok/error del '\n' iniziale da scartare
   String  nextLine;                      // riga letta ma non ancora inviata
   File    file;
@@ -87,13 +117,10 @@ struct StreamCtrl {
   int     mainTotal = 0;                 // righe del job principale (ripristinate a fine air cut)
 } stream;
 
-// ── Debug ESP: carico CPU approssimato + heap (aggiornati ogni ~1 s) ───────
-// Carico = tempo dei loop() eccedente il minimo (iterazione "a vuoto")
-// rispetto al tempo reale della finestra. Stima, non misura esatta.
+// ── Debug ESP: stato heap (letto al massimo ~1 volta al secondo) ───────────
 struct EspStats {
-  uint32_t winStart = 0, sumUs = 0, minUs = 0xFFFFFFFF, n = 0;
-  uint8_t  cpu = 0, frag = 0;
-  uint32_t heap = 0, maxBlk = 0;
+  uint32_t lastMs = 0, heap = 0, maxBlk = 0;
+  uint8_t  frag = 0;
 } espSt;
 
 String grblLineBuf;
@@ -131,7 +158,7 @@ void sendErrorMsg(const char* msg);
 void startStopSequence();
 bool beginStream(const char* path);
 void aircutEnd();
-void updateEspStats(uint32_t loopUs);
+void updateEspStats();
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SETUP
@@ -140,25 +167,23 @@ void setup() {
   // Banner sulla USB prima dello swap (visibile nel Monitor Seriale)
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\n=== esp32_wireless_bridge v2.4 (ESP8266) ==="));
-  Serial.println(F("RX GRBL = D7 (GPIO13, UART hardware)  TX GRBL = D5 (GPIO14)"));
+  Serial.println(F("\n=== esp32_wireless_bridge v2.5 (ESP8266) ==="));
+  Serial.println(F("RX GRBL = D7 (GPIO13, UART0)  TX GRBL = D4 (GPIO2, Serial1)"));
   Serial.println(F("Da qui in poi la USB non riceve piu' log (vedi console web)."));
   Serial.flush();
   Serial.end();
 
-  DBG.begin(DEBUG_BAUD);
+  // TX hardware verso GRBL: UART1 (solo trasmissione) su GPIO2 (D4).
+  // Va aperta prima dello swap di UART0; Serial.begin() non va più chiamato
+  // dopo lo swap (lo annullerebbe).
+  grblTx.begin(GRBL_BAUD);
 
   // RX hardware: UART0 solo ricezione, spostata su GPIO13 (D7)
   grblRx.setRxBufferSize(GRBL_HW_RXBUF);
   grblRx.begin(GRBL_BAUD, SERIAL_8N1, SERIAL_RX_ONLY);
   grblRx.swap();
 
-  // TX software solo-trasmissione su D5. Interrupt disattivati durante ogni
-  // byte (~87 µs) per un timing preciso; la RX hardware non ne risente.
-  grblTx.begin(GRBL_BAUD, SWSERIAL_8N1, -1, GRBL_TX_PIN, false, 0);
-  grblTx.enableIntTx(false);
-
-  if (!LittleFS.begin()) DBG.println(F("LittleFS ERRORE"));
+  LittleFS.begin();
   if (LittleFS.exists(GCODE_PATH)) stream.total = countFileLines();
   LittleFS.remove(AIRCUT_PATH);            // residuo di un air cut interrotto da reset
 
@@ -166,33 +191,23 @@ void setup() {
   setupHTTP();
   wsServer.begin();
   wsServer.onEvent(wsEvent);
-  DBG.println(F("Sistema pronto."));
 }
 
 void loop() {
-  uint32_t t0 = micros();
   wsServer.loop();
   httpServer.handleClient();
   loopGrbl();
   loopStream();
-  updateEspStats(micros() - t0);
 }
 
-// Accumula la durata dei loop(); ogni ~1 s calcola carico CPU e stato heap
-void updateEspStats(uint32_t loopUs) {
-  espSt.sumUs += loopUs;
-  if (loopUs < espSt.minUs) espSt.minUs = loopUs;
-  espSt.n++;
-  uint32_t now = micros(), win = now - espSt.winStart;
-  if (win < 1000000UL) return;
-  uint32_t idle = espSt.minUs * espSt.n;           // costo delle iterazioni a vuoto
-  uint32_t busy = espSt.sumUs > idle ? espSt.sumUs - idle : 0;
-  uint32_t pct  = (uint32_t)((uint64_t)busy * 100 / win);
-  espSt.cpu    = pct > 100 ? 100 : pct;
+// Legge heap libero, frammentazione e blocco massimo (al più 1 volta/s)
+void updateEspStats() {
+  uint32_t now = millis();
+  if (espSt.lastMs && now - espSt.lastMs < 1000) return;
+  espSt.lastMs = now ? now : 1;
   espSt.heap   = ESP.getFreeHeap();
   espSt.frag   = ESP.getHeapFragmentation();
   espSt.maxBlk = ESP.getMaxFreeBlockSize();
-  espSt.winStart = now; espSt.sumUs = 0; espSt.minUs = 0xFFFFFFFF; espSt.n = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -204,7 +219,6 @@ void setupWiFi() {
   WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
   const char* pw = strlen(AP_PASSWORD) >= 8 ? AP_PASSWORD : nullptr;
   WiFi.softAP(AP_SSID, pw, AP_CHANNEL);
-  DBG.printf("AP '%s'  IP %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -237,7 +251,6 @@ void setupHTTP() {
       broadcastJson(doc);
       httpServer.send(200, "application/json",
         "{\"ok\":true,\"lines\":" + String(stream.total) + "}");
-      DBG.printf("G-code ricevuto: %d righe\n", stream.total);
     },
     []() {
       HTTPUpload& up = httpServer.upload();
@@ -305,7 +318,6 @@ void handleWsMsg(const String& msg) {
   // Sempre accettati, anche con job attivo
   if (type == "estop") {
     startStopSequence();
-    DBG.println(F("E-STOP: hold + reset"));
     return;
   }
   if (type == "stream_force_clear") {
@@ -372,7 +384,6 @@ void handleWsMsg(const String& msg) {
       return;
     }
     if (!beginStream(GCODE_PATH)) { sendErrorMsg("Impossibile aprire il file G-code"); return; }
-    DBG.printf("Streaming avviato: %d righe\n", stream.total);
 
   } else if (type == "aircut") {
     // Air cut ingombro: percorso generato dalla UI, scritto in un file a parte
@@ -392,6 +403,7 @@ void handleWsMsg(const String& msg) {
       String l = cleanGcodeLine(text.substring(start, end));
       if (l.length()) { f.print(l); f.print('\n'); count++; }
       start = end + 1;
+      yield();
     }
     f.close();
     if (!count) { LittleFS.remove(AIRCUT_PATH); sendErrorMsg("Air cut vuoto"); return; }
@@ -403,7 +415,6 @@ void handleWsMsg(const String& msg) {
       aircutEnd();
       return;
     }
-    DBG.printf("Air cut avviato: %d righe\n", count);
 
   } else if (type == "stream_pause") {
     // Sospende l'invio di nuove righe e mette GRBL in feed-hold; al resume
@@ -429,6 +440,7 @@ void handleWsMsg(const String& msg) {
       String l = cleanGcodeLine(text.substring(start, end));
       if (l.length()) { f.print(l); f.print('\n'); count++; }
       start = end + 1;
+      yield();
     }
     f.close();
     stream.total = count;
@@ -488,13 +500,11 @@ void loopGrbl() {
     if (grblSt.name == "Disconnected") {
       streamAbort();
       sendErrorMsg("Arduino non risponde: job annullato");
-    } else if (!stream.paused && !stream.pendingLen.empty() &&
+    } else if (!stream.paused && !pqEmpty() &&
                grblSt.name == "Idle" && now - stream.lastAckMs > 3000) {
       // GRBL fermo ma mancano degli ok: sono andati persi
-      DBG.printf("Watchdog: %u ok mancanti\n", (unsigned)stream.pendingLen.size());
-      stream.acked += stream.pendingLen.size() - stream.flushAcks;
-      stream.pendingLen.clear();
-      stream.pendingTxt.clear();
+      stream.acked += pqCount - stream.flushAcks;
+      pqClear();
       stream.flushAcks = 0;
       stream.txInFlight = 0;
       stream.lastAckMs = now;
@@ -508,12 +518,11 @@ void loopGrbl() {
 // Consuma l'ok/error della riga più vecchia del job. Ritorna false se era
 // la risposta al '\n' di pulizia iniziale (non è una riga del job).
 static bool ackStreamLine(String* txt = nullptr) {
-  if (!stream.running || stream.pendingLen.empty()) return false;
-  stream.txInFlight -= stream.pendingLen.front();
+  if (!stream.running || pqEmpty()) return false;
+  stream.txInFlight -= pqFrontLen();
   if (stream.txInFlight < 0) stream.txInFlight = 0;
-  stream.pendingLen.pop_front();
-  if (txt) *txt = stream.pendingTxt.empty() ? String() : stream.pendingTxt.front();
-  if (!stream.pendingTxt.empty()) stream.pendingTxt.pop_front();
+  if (txt) *txt = pqFrontTxt();
+  pqPop();
   stream.lastAckMs = millis();
   if (stream.flushAcks > 0) { stream.flushAcks--; return false; }
   stream.acked++;
@@ -537,12 +546,11 @@ void processGrblLine(const String& line) {
 
   if (line.startsWith("error:")) {
     int code = line.substring(6).toInt();
-    bool inJob = stream.running && !stream.pendingLen.empty();
+    bool inJob = stream.running && !pqEmpty();
     String errTxt;
     if (inJob && !ackStreamLine(&errTxt)) {
       // Errore sul '\n' di pulizia: GRBL aveva spazzatura nel buffer, ora
       // scartata. Il job prosegue normalmente.
-      DBG.printf("Scartata riga spuria nel buffer GRBL (error:%d)\n", code);
       sendErrorMsg("Scartati caratteri spuri nel buffer di GRBL prima del job (normale, il job prosegue)");
       return;
     }
@@ -551,7 +559,6 @@ void processGrblLine(const String& line) {
       stream.lastError = code;
       stream.errLine   = stream.acked;
       stream.errText   = errTxt;
-      DBG.printf("error:%d riga %d: %s\n", code, stream.acked, errTxt.c_str());
       broadcastProgress(true);
     }
     JsonDocument doc;
@@ -659,28 +666,28 @@ void loopStream() {
       }
       stream.nextLine = stream.file.readStringUntil('\n');
       stream.nextLine.trim();
-      if (!stream.nextLine.length()) continue;
+      if (!stream.nextLine.length()) { yield(); continue; }
     }
     int lineBytes = stream.nextLine.length() + 1;     // + '\n'
     // La riga resta in attesa (non viene persa) finché non c'è spazio.
     // Se il buffer è vuoto la si invia comunque (riga lunghissima).
     if (stream.txInFlight > 0 && stream.txInFlight + lineBytes > GRBL_RX_BUFFER_BYTES) break;
+    if (pqFull()) break;                             // coda piena: attende un ok
     sendCmd(stream.nextLine);
     stream.txInFlight += lineBytes;
-    stream.pendingLen.push_back(lineBytes);
-    stream.pendingTxt.push_back(stream.nextLine);
+    pqPush(lineBytes, stream.nextLine.c_str());
     stream.sent++;
     stream.nextLine = "";
+    yield();                                         // respiro allo stack WiFi
   }
 
-  if (stream.eof && stream.pendingLen.empty()) {
+  if (stream.eof && pqEmpty()) {
     stream.running = false;
     broadcastProgress(true);
     JsonDocument doc;
     doc["type"] = "stream_done"; doc["total"] = stream.total;
     doc["aircut"] = stream.aircut;
     broadcastJson(doc);
-    DBG.println(stream.aircut ? F("Air cut completato") : F("Job completato"));
     aircutEnd();
   }
 }
@@ -692,8 +699,7 @@ void streamReset() {
   stream.lastError = stream.errLine = 0;
   stream.errText = "";
   stream.flushAcks = 0;
-  stream.pendingLen.clear();
-  stream.pendingTxt.clear();
+  pqClear();
   stream.nextLine = "";
 }
 
@@ -720,8 +726,7 @@ bool beginStream(const char* path) {
   // scartata (flushAcks) e non conta come riga del job.
   sendCmd("");
   stream.txInFlight = 1;
-  stream.pendingLen.push_back(1);
-  stream.pendingTxt.push_back("");
+  pqPush(1, "");
   stream.flushAcks = 1;
   broadcastProgress(true);
   return true;
@@ -754,14 +759,19 @@ String cleanGcodeLine(String line) {
   }
   line.trim();
   if (line == "%") line = "";
-  if (line.length() > GRBL_MAX_LINE - 1) DBG.printf("Riga > %u caratteri: %s\n", (unsigned)GRBL_MAX_LINE - 1, line.c_str());
   return line;
 }
 
 int countFileLines(const char* path) {
   File f = LittleFS.open(path, "r");
   int n = 0;
-  while (f && f.available()) if (f.read() == '\n') n++;
+  uint8_t buf[256];
+  while (f && f.available()) {                     // lettura a blocchi
+    int r = f.read(buf, sizeof(buf));
+    if (r <= 0) break;
+    for (int i = 0; i < r; i++) if (buf[i] == '\n') n++;
+    yield();
+  }
   if (f) f.close();
   return n;
 }
@@ -843,8 +853,9 @@ String buildStatusJson() {
   st["sent"] = stream.sent; st["acked"] = stream.acked; st["total"] = stream.total;
   st["lastError"] = stream.lastError; st["errLine"] = stream.errLine; st["errText"] = stream.errText;
   st["aircut"] = stream.aircut;
+  updateEspStats();
   JsonObject esp = doc["esp"].to<JsonObject>();
-  esp["cpu"] = espSt.cpu; esp["heap"] = espSt.heap;
+  esp["heap"] = espSt.heap;
   esp["frag"] = espSt.frag; esp["maxblk"] = espSt.maxBlk;
   doc["rx_age"] = (uint32_t)(millis() - grblSt.lastRxMs);
   String out;

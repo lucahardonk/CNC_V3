@@ -16,21 +16,20 @@
 // ── Seriale verso GRBL ──────────────────────────────────────────────────────
 //   RX  = UART0 HARDWARE spostata con Serial.swap() su GPIO13 (D7)
 //         → ricezione affidabile anche con WiFi attivo (FIFO + buffer ISR)
-//   TX  = SoftwareSerial solo-trasmissione su GPIO14 (D5)
+//   TX  = Serial1 HARDWARE (UART1, solo trasmissione) su GPIO2 (D4)
+//         → nessun bit-banging software, timing preciso anche con WiFi
 //
 //   Arduino TX (pin 1) → HV2 ⇄ LV2 → ESP D7 GPIO13  (RX)
-//   Arduino RX (pin 0) → HV1 ⇄ LV1 → ESP D5 GPIO14  (TX)
+//   Arduino RX (pin 0) → HV1 ⇄ LV1 → ESP D4 GPIO2   (TX, Serial1)
 //
 //   GPIO15 (D8) NON va collegato: deve stare basso all'avvio dell'ESP.
-#define GRBL_TX_PIN       14             // D5
+//   GPIO2 (D4) deve essere alto all'avvio: la linea TX a riposo è alta, ok.
+//   Il LED blu della scheda (su D4) lampeggia durante la trasmissione.
 #define GRBL_BAUD         115200         // GRBL 1.1h: fisso a 115200
 #define GRBL_HW_RXBUF     2048           // buffer RX della UART hardware (byte)
 
-// ── Debug (solo trasmissione) ───────────────────────────────────────────────
-//   Dopo lo swap la USB non riceve più i log: vanno su Serial1 = GPIO2 (D4,
-//   LED blu). Leggibili solo con un adattatore USB-seriale su D4.
-//   La console della pagina web mostra comunque tutto il traffico GRBL.
-#define DEBUG_BAUD        115200
+// Debug seriale eliminato: la console della pagina web mostra tutto il
+// traffico GRBL e i messaggi del bridge.
 
 // ── Polling status ──────────────────────────────────────────────────────────
 #define STATUS_INTERVAL_MS  200          // ms tra un '?' e il successivo
