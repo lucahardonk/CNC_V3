@@ -21,10 +21,9 @@ streaming G-code, jog e air cut via WebSocket.
 ## Installazione
 
 1. Core ESP8266: in *File → Impostazioni → URL aggiuntive* aggiungi
-   `https://arduino.esp8266.com/stable/package_esp8266com_index.json` e installa **esp8266** (testato 3.1.2).
-2. Librerie: **WebSockets** di Markus Sattler (2.7.2) e **ArduinoJson** di Benoit Blanchon (7.x).
-3. Scheda *NodeMCU 1.0 (ESP-12E Module)*, CPU *160 MHz*, Flash *4MB (FS:2MB OTA:~1019KB)*.
-4. Carica lo sketch. Non serve caricare nulla su LittleFS: l'HTML è incorporato nel firmware.
+   `https://arduino.esp8266.com/stable/package_esp8266com_index.json` e installa **esp8266**.
+2. Installa le librerie e imposta la scheda come in [Riproducibilità](#riproducibilità-impostazioni-usate).
+3. Carica lo sketch. Non serve caricare nulla su LittleFS: l'HTML è incorporato nel firmware.
 
 ## Connessione
 
@@ -35,10 +34,39 @@ Rete WiFi **CNC-Remote** (aperta, senza password) → http://192.168.4.1
 
 Dopo aver modificato `data/index.html`: `python3 tools/embed_html.py`, poi ricompila e ricarica.
 
-## Compilazione da CLI
+## Riproducibilità (impostazioni usate)
+
+| Software | Versione |
+|---|---|
+| Core **esp8266** (Arduino IDE) | 3.1.2 |
+| **WebSockets** — Markus Sattler (Links2004) | 2.7.2 |
+| **ArduinoJson** — Benoit Blanchon | 7.4.3 |
+| LittleFS | inclusa nel core |
+| Arduino Uno | GRBL 1.1h (`firmware/arduino_uno_grbl`) |
+
+| Impostazione scheda (menu *Strumenti*) | Valore |
+|---|---|
+| Board | NodeMCU 1.0 (ESP-12E Module) |
+| Upload Speed | 115200 |
+| CPU Frequency | **160 MHz** |
+| Flash Size | 4MB (FS:2MB OTA:~1019KB) |
+| Debug port / Debug Level | Disabled / None |
+| lwIP Variant | v2 Lower Memory |
+| C++ Exceptions | Disabled (new aborts on oom) |
+| MMU | 32KB cache + 32KB IRAM (balanced) |
+| Non-32-Bit Access | Use pgm_read macros for IRAM/PROGMEM |
+| SSL Support | All SSL ciphers (most compatible) |
+| Stack Protection | Disabled |
+| VTables | Flash |
+| Erase Flash | Only Sketch |
+| Builtin Led | 2 |
+
+![Impostazioni scheda Arduino IDE](docs/arduino_ide_board_settings.png)
+
+Compilazione equivalente da CLI (stesse opzioni):
 
 ```bash
-arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2:xtal=160 firmware/esp32_wireless_bridge
+arduino-cli compile --fqbn "esp8266:esp8266:nodemcuv2:xtal=160,baud=115200,eesz=4M2M,dbg=Disabled,lvl=None____,ip=lm2f,exception=disabled,mmu=3232,non32xfer=fast,ssl=all,stacksmash=disabled,vt=flash,wipe=none,led=2" firmware/esp32_wireless_bridge
 ```
 
 ## Funzionalità
