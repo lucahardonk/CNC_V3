@@ -420,6 +420,95 @@ def depth_levels(depth_total: float, depth_per_pass: float) -> list[float]:
     return levels
 
 
+# --------------------------------------------------------------------------- ordinamento
+@dataclass
+class Unit:
+    """Gruppo di percorsi lavorato a tutta profondità prima di passare al successivo.
+    single=True: un solo percorso, ingresso ottimizzabile (rotazione/inversione), passate senza risalita.
+    single=False: pocket di una forma, passate livello per livello nell'ordine originale."""
+    idx: list[int]
+    single: bool
+
+
+def _make_units(paths: list[Path], region, operation: str) -> list[Unit]:
+    if operation != "pocket":
+        return [Unit([i], True) for i in range(len(paths))]
+    comps = [pl.buffer(1e-3) for pl in _polys(region)]
+    groups: dict[int, list[int]] = {}
+    units: list[Unit] = []
+    for i, pa in enumerate(paths):
+        k = next((c for c, g in enumerate(comps) if g.contains(Point(pa.points[0]))), None)
+        if k is None or not pa.closed and not comps[k].contains(LineString(pa.points)):
+            units.append(Unit([i], True))  # linea aperta fuori dalle pocket
+        else:
+            groups.setdefault(k, []).append(i)
+    return [Unit(v, False) for v in groups.values()] + units
+
+
+def _entry(path: Path, pos: tuple[float, float]) -> tuple[float, list[tuple[float, float]]]:
+    """(distanza d'ingresso, punti riordinati) per iniziare il percorso il più vicino possibile a pos."""
+    pts = path.points
+    if path.closed and len(pts) > 3 and math.dist(pts[0], pts[-1]) < EPS:
+        ring = pts[:-1]
+        k = min(range(len(ring)), key=lambda j: math.dist(pos, ring[j]))
+        return math.dist(pos, ring[k]), ring[k:] + ring[:k] + [ring[k]]
+    if math.dist(pos, pts[-1]) < math.dist(pos, pts[0]):
+        return math.dist(pos, pts[-1]), pts[::-1]
+    return math.dist(pos, pts[0]), list(pts)
+
+
+def _ring_poly(u: Unit, paths: list[Path]):
+    pa = paths[u.idx[0]]
+    if u.single and pa.closed and len(pa.points) >= 4:
+        poly = Polygon(pa.points).buffer(0)
+        return None if poly.is_empty else poly
+    return None
+
+
+def order_units(paths: list[Path], units: list[Unit], start: tuple[float, float], n_levels: int = 1):
+    """Nearest-neighbor con vincolo di sicurezza: tutto ciò che sta dentro un contorno chiuso
+    (fori, isole, incisioni interne) va lavorato prima del contorno stesso, così il pezzo non si
+    libera prima del tempo. Ritorna [(unit, [punti di ogni percorso])]."""
+    n = len(units)
+    shapes = [LineString([q for i in u.idx for q in paths[i].points]) for u in units]
+    rings = [_ring_poly(u, paths) for u in units]
+    before: list[set[int]] = [set() for _ in range(n)]  # before[b] = unità da fare prima di b
+    for b in range(n):
+        if rings[b] is None:
+            continue
+        grown = rings[b].buffer(1e-4)
+        for a in range(n):
+            if a == b or not grown.contains(shapes[a]):
+                continue
+            if rings[a] is not None and rings[a].area >= rings[b].area - EPS:
+                continue  # contorni coincidenti: nessun vincolo
+            before[b].add(a)
+    done: set[int] = set()
+    out, pos = [], start
+    while len(done) < n:
+        ready = [u for u in range(n) if u not in done and before[u] <= done]
+        if not ready:  # vincoli ciclici (contorni coincidenti): sblocca
+            ready = [u for u in range(n) if u not in done]
+        best = None
+        for u in ready:
+            if units[u].single:
+                d, pts = _entry(paths[units[u].idx[0]], pos)
+                cand = (d, u, [pts])
+            else:
+                cand = (math.dist(pos, paths[units[u].idx[0]].points[0]), u,
+                        [list(paths[i].points) for i in units[u].idx])
+            if best is None or cand[0] < best[0]:
+                best = cand
+        _, u, plist = best
+        done.add(u)
+        out.append((units[u], plist))
+        last = plist[-1]
+        # percorso aperto singolo: andata/ritorno tra le passate, con n pari si chiude all'inizio
+        open_single = units[u].single and not paths[units[u].idx[0]].closed
+        pos = last[0] if open_single and n_levels % 2 == 0 else last[-1]
+    return out
+
+
 def generate_moves(entities: list[dict[str, Any]], p: Params, layer_info: dict[str, dict] | None = None,
                    start_pos: tuple[float, float] = (0.0, 0.0)) -> Moves:
     """Calcola i percorsi e li emette come G0/G1 multi-passata (Z incrementale fino a -depth_total).
@@ -463,51 +552,83 @@ def generate_moves(entities: list[dict[str, Any]], p: Params, layer_info: dict[s
         tags = [_path_layer(pa, sources) if sources else "0" for pa in paths]
 
     out: list[str] = []
-    rapid_len = cut_len = 0.0
-    cut_time = 0.0
-    pos = start_pos
-    curz = p.safe_height
-    for li, zl in enumerate(levels, 1):
-        out.append(f"; --- Pass {li}/{len(levels)} Z={_f(zl)} ---")
-        cur_tag = None
-        for pi, path in enumerate(paths):
-            pts = path.points
+    st = {"rapid": 0.0, "cut": 0.0, "time": 0.0, "z": p.safe_height, "pos": start_pos}
+
+    def plunge_to(zz: float):
+        if abs(zz - st["z"]) < EPS:
+            return
+        out.append(f"G1 Z{_f(zz)} F{_f(p.plunge_rate)}")
+        st["time"] += abs(st["z"] - zz) / p.plunge_rate
+        st["z"] = zz
+
+    def start_z(pt, zl):
+        return z_tab if (bridges is not None and zl < z_tab and bridges.contains(Point(pt))) else zl
+
+    def enter(pt, zl):
+        """Risalita a quota sicura, rapido sopra il punto, avvicinamento e affondo."""
+        out.append(f"G0 Z{_f(p.safe_height)}")
+        st["rapid"] += abs(p.safe_height - st["z"])
+        out.append(f"G0 X{_f(pt[0])} Y{_f(pt[1])}")
+        st["rapid"] += math.dist(st["pos"], pt)
+        out.append(f"G0 Z{_f(min(1.0, p.safe_height))}")
+        st["z"] = min(1.0, p.safe_height)
+        plunge_to(start_z(pt, zl))
+
+    def cut(pts, zl):
+        first_feed, prev = True, pts[0]
+        for nxt in pts[1:]:
+            for end, zz in _split_by_bridges(prev, nxt, bridges, zl, z_tab):
+                if abs(zz - st["z"]) > EPS:
+                    plunge_to(zz)
+                    first_feed = True
+                seg = math.dist(prev, end)
+                if seg < EPS:
+                    continue
+                out.append(f"G1 X{_f(end[0])} Y{_f(end[1])}" + (f" F{_f(p.feed_rate)}" if first_feed else ""))
+                first_feed = False
+                st["cut"] += seg
+                st["time"] += seg / p.feed_rate
+                prev = end
+        st["pos"] = prev
+
+    # Ogni forma viene completata a tutta profondità prima di passare alla successiva,
+    # scelta col vicino più prossimo (fori/isole sempre prima del contorno che li racchiude).
+    cur_tag = None
+    nl = len(levels)
+    for ui, (unit, plist) in enumerate(order_units(paths, _make_units(paths, region, p.operation), start_pos, nl), 1):
+        if tags is not None and tags[unit.idx[0]] != cur_tag:
+            cur_tag = tags[unit.idx[0]]
+            out.append(_layer_comment(cur_tag, layer_info))
+        if unit.single:
+            pts = plist[0]
             if len(pts) < 2:
                 continue
-            if tags is not None and tags[pi] != cur_tag:
-                cur_tag = tags[pi]
-                out.append(_layer_comment(cur_tag, layer_info))
-            start = pts[0]
-            out.append(f"G0 Z{_f(p.safe_height)}")
-            rapid_len += abs(p.safe_height - curz)
-            out.append(f"G0 X{_f(start[0])} Y{_f(start[1])}")
-            rapid_len += math.dist(pos, start)
-            start_z = z_tab if (bridges is not None and zl < z_tab and bridges.contains(Point(start))) else zl
-            out.append(f"G0 Z{_f(min(1.0, p.safe_height))}")
-            out.append(f"G1 Z{_f(start_z)} F{_f(p.plunge_rate)}")
-            cut_time += (min(1.0, p.safe_height) - start_z) / p.plunge_rate
-            curz = start_z
-            first_feed = True
-            prev = start
-            for nxt in pts[1:]:
-                for end, zz in _split_by_bridges(prev, nxt, bridges, zl, z_tab):
-                    if abs(zz - curz) > EPS:
-                        out.append(f"G1 Z{_f(zz)} F{_f(p.plunge_rate)}")
-                        cut_time += abs(zz - curz) / p.plunge_rate
-                        curz = zz
-                        first_feed = True
-                    seg = math.dist(prev, end)
-                    if seg < EPS:
+            out.append(f"; --- Forma {ui}: {nl} passate fino a Z={_f(levels[-1])} ---")
+            closed = paths[unit.idx[0]].closed
+            for li, zl in enumerate(levels):
+                if li == 0:
+                    enter(pts[0], zl)
+                else:
+                    # l'utensile è già nel solco appena tagliato: scende direttamente alla passata successiva
+                    if not closed:
+                        pts = pts[::-1]  # percorso aperto: andata e ritorno
+                    plunge_to(start_z(pts[0], zl))
+                cut(pts, zl)
+        else:
+            out.append(f"; --- Pocket {ui}: {nl} passate fino a Z={_f(levels[-1])} ---")
+            for li, zl in enumerate(levels, 1):
+                out.append(f"; Pass {li}/{nl} Z={_f(zl)}")
+                for k, pts in enumerate(plist):
+                    if len(pts) < 2:
                         continue
-                    out.append(f"G1 X{_f(end[0])} Y{_f(end[1])}" + (f" F{_f(p.feed_rate)}" if first_feed else ""))
-                    first_feed = False
-                    cut_len += seg
-                    cut_time += seg / p.feed_rate
-                    prev = end
-            pos = prev
-        out.append(f"G0 Z{_f(p.safe_height)}")
-        curz = p.safe_height
-    return Moves(out, levels, rapid_len, cut_len, cut_time, warnings, pos)
+                    if tags is not None and tags[unit.idx[k]] != cur_tag:
+                        cur_tag = tags[unit.idx[k]]
+                        out.append(_layer_comment(cur_tag, layer_info))
+                    enter(pts[0], zl)
+                    cut(pts, zl)
+    out.append(f"G0 Z{_f(p.safe_height)}")
+    st["rapid"] += abs(p.safe_height - st["z"])
+    return Moves(out, levels, st["rapid"], st["cut"], st["time"], warnings, st["pos"])
 
 
 OP_NAMES = {"profile_on": "Profilo sul centro", "profile_inside": "Profilo interno",

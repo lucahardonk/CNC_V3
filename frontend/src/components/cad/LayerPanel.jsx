@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, Eye, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, Download, Eye, Pencil, Play, Plus, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
 import Tooltip from '../common/Tooltip'
 import { layerColor } from './geometry'
 import { OPERATION_NAMES, useStore } from '../../store/store'
-import { errMsg, Layers } from '../../services/api'
+import { errMsg, Export, Layers } from '../../services/api'
 
 // Limiti della macchina reale (GRBL 1.1h): oltre questi valori il campo diventa rosso
 export const MACHINE_LIMITS = { feed: 1500, rpm: 24000 }
@@ -26,6 +26,11 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
   const [editing, setEditing] = useState(null)
   const [name, setName] = useState('')
   const [open, setOpen] = useState(() => new Set())
+  const [busy, setBusy] = useState(null) // id del layer in download
+  const downloadNc = async (l) => {
+    setBusy(l.id)
+    try { notify(`Scaricato ${await Export.layerNc(l.id)}`, 'success') } catch (e) { notify(`Download fallito: ${errMsg(e)}`, 'error') } finally { setBusy(null) }
+  }
   const toggle = (id) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
   return (
@@ -62,6 +67,8 @@ export default function LayerPanel({ layers, activeId, mode, onSelect, onEdit, o
                 <Btn tip="Modifica disegno (CAD)" onClick={() => onEdit(l.id)} active={mode === 'cad' && active}><Pencil size={13} /></Btn>
                 <Btn tip={l.entity_count || l.gcode ? 'Simulazione 3D del percorso utensile' : 'Layer vuoto: disegna qualcosa prima'} disabled={!l.entity_count && !l.gcode} onClick={() => onCut(l.id)} active={mode === 'cutting' && active} green><Play size={13} /></Btn>
                 <Btn tip="Mostra nel 3D" onClick={() => onSelect(l.id, true)}><Eye size={13} /></Btn>
+                <Btn tip={l.entity_count ? 'Scarica .nc: G-code di questo layer con i suoi parametri di taglio, da caricare sul bridge wireless' : 'Layer vuoto: disegna qualcosa prima'}
+                  disabled={!l.entity_count || busy === l.id} onClick={() => downloadNc(l)}><Download size={13} className={busy === l.id ? 'animate-pulse' : ''} /></Btn>
                 <Btn tip="Parametri di taglio del layer" onClick={() => toggle(l.id)} active={open.has(l.id)}>{open.has(l.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</Btn>
                 <div className="ml-auto flex opacity-0 transition group-hover:opacity-100">
                   <Btn tip="Sposta su" disabled={i === 0} onClick={() => onMove(l.id, -1)}><ArrowUp size={13} /></Btn>
