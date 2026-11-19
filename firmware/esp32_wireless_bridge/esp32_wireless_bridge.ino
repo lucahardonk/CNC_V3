@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  esp32_wireless_bridge v2.3 — NodeMCU 1.0 (ESP8266 / ESP-12E)
+//  esp32_wireless_bridge v2.4 — NodeMCU 1.0 (ESP8266 / ESP-12E)
 //  Bridge WiFi + interfaccia web completa per GRBL 1.1h su Arduino Uno
 //
 //  Librerie (Library Manager):
@@ -31,7 +31,8 @@
 
 #define DBG Serial1                      // log su GPIO2 (D4), solo TX
 
-static const char* GCODE_PATH = "/gcode.nc";
+static const char* GCODE_PATH  = "/gcode.nc";
+static const char* AIRCUT_PATH = "/aircut.nc";   // percorso ingombro (temporaneo)
 static const size_t GRBL_MAX_LINE = 80;  // LINE_BUFFER_SIZE di GRBL 1.1
 
 // ── Seriale GRBL: RX = UART0 hardware (swap su D7), TX = SoftwareSerial D5 ──
@@ -82,7 +83,18 @@ struct StreamCtrl {
   int     lastError = 0;                 // codice error:N che ha messo in pausa
   int     errLine   = 0;                 // riga del job che ha dato l'errore
   String  errText;                       // testo della riga che ha dato l'errore
+  bool    aircut   = false;              // job corrente = air cut ingombro
+  int     mainTotal = 0;                 // righe del job principale (ripristinate a fine air cut)
 } stream;
+
+// ── Debug ESP: carico CPU approssimato + heap (aggiornati ogni ~1 s) ───────
+// Carico = tempo dei loop() eccedente il minimo (iterazione "a vuoto")
+// rispetto al tempo reale della finestra. Stima, non misura esatta.
+struct EspStats {
+  uint32_t winStart = 0, sumUs = 0, minUs = 0xFFFFFFFF, n = 0;
+  uint8_t  cpu = 0, frag = 0;
+  uint32_t heap = 0, maxBlk = 0;
+} espSt;
 
 String grblLineBuf;
 String uploadLineBuf;
@@ -112,11 +124,14 @@ void broadcastStatus();
 void broadcastProgress(bool force);
 String buildStatusJson();
 String cleanGcodeLine(String line);
-int countFileLines();
+int countFileLines(const char* path = GCODE_PATH);
 void streamReset();
 void streamAbort();
 void sendErrorMsg(const char* msg);
 void startStopSequence();
+bool beginStream(const char* path);
+void aircutEnd();
+void updateEspStats(uint32_t loopUs);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SETUP
@@ -125,7 +140,7 @@ void setup() {
   // Banner sulla USB prima dello swap (visibile nel Monitor Seriale)
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("\n=== esp32_wireless_bridge v2.3 (ESP8266) ==="));
+  Serial.println(F("\n=== esp32_wireless_bridge v2.4 (ESP8266) ==="));
   Serial.println(F("RX GRBL = D7 (GPIO13, UART hardware)  TX GRBL = D5 (GPIO14)"));
   Serial.println(F("Da qui in poi la USB non riceve piu' log (vedi console web)."));
   Serial.flush();
@@ -145,6 +160,7 @@ void setup() {
 
   if (!LittleFS.begin()) DBG.println(F("LittleFS ERRORE"));
   if (LittleFS.exists(GCODE_PATH)) stream.total = countFileLines();
+  LittleFS.remove(AIRCUT_PATH);            // residuo di un air cut interrotto da reset
 
   setupWiFi();
   setupHTTP();
@@ -154,10 +170,29 @@ void setup() {
 }
 
 void loop() {
+  uint32_t t0 = micros();
   wsServer.loop();
   httpServer.handleClient();
   loopGrbl();
   loopStream();
+  updateEspStats(micros() - t0);
+}
+
+// Accumula la durata dei loop(); ogni ~1 s calcola carico CPU e stato heap
+void updateEspStats(uint32_t loopUs) {
+  espSt.sumUs += loopUs;
+  if (loopUs < espSt.minUs) espSt.minUs = loopUs;
+  espSt.n++;
+  uint32_t now = micros(), win = now - espSt.winStart;
+  if (win < 1000000UL) return;
+  uint32_t idle = espSt.minUs * espSt.n;           // costo delle iterazioni a vuoto
+  uint32_t busy = espSt.sumUs > idle ? espSt.sumUs - idle : 0;
+  uint32_t pct  = (uint32_t)((uint64_t)busy * 100 / win);
+  espSt.cpu    = pct > 100 ? 100 : pct;
+  espSt.heap   = ESP.getFreeHeap();
+  espSt.frag   = ESP.getHeapFragmentation();
+  espSt.maxBlk = ESP.getMaxFreeBlockSize();
+  espSt.winStart = now; espSt.sumUs = 0; espSt.minUs = 0xFFFFFFFF; espSt.n = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -336,22 +371,39 @@ void handleWsMsg(const String& msg) {
       sendErrorMsg("GRBL non pronto (Alarm/Disconnected): sblocca con $X o Home");
       return;
     }
-    streamReset();
-    stream.file = LittleFS.open(GCODE_PATH, "r");
-    if (!stream.file) { sendErrorMsg("Impossibile aprire il file G-code"); return; }
-    stream.running = true;
-    stream.lastAckMs = millis();
-    // '\n' iniziale: chiude un'eventuale riga parziale/spazzatura rimasta nel
-    // buffer di GRBL (disturbi sulla linea TX, comandi interrotti). Senza,
-    // GRBL la concatenerebbe alla riga 1 → error:2. La sua risposta viene
-    // scartata (flushAcks) e non conta come riga del job.
-    sendCmd("");
-    stream.txInFlight = 1;
-    stream.pendingLen.push_back(1);
-    stream.pendingTxt.push_back("");
-    stream.flushAcks = 1;
-    broadcastProgress(true);
+    if (!beginStream(GCODE_PATH)) { sendErrorMsg("Impossibile aprire il file G-code"); return; }
     DBG.printf("Streaming avviato: %d righe\n", stream.total);
+
+  } else if (type == "aircut") {
+    // Air cut ingombro: percorso generato dalla UI, scritto in un file a parte
+    // e inviato con lo stesso streaming. Il file del job resta intatto.
+    if (stream.running) { sendErrorMsg("Job in corso: air cut non avviabile"); return; }
+    if (grblSt.name == "Alarm" || grblSt.name == "Disconnected") {
+      sendErrorMsg("GRBL non pronto (Alarm/Disconnected): sblocca con $X o Home");
+      return;
+    }
+    String text = doc["text"] | "";
+    File f = LittleFS.open(AIRCUT_PATH, "w");
+    if (!f) { sendErrorMsg("Impossibile scrivere il file air cut"); return; }
+    int count = 0, start = 0;
+    while (start < (int)text.length()) {
+      int end = text.indexOf('\n', start);
+      if (end < 0) end = text.length();
+      String l = cleanGcodeLine(text.substring(start, end));
+      if (l.length()) { f.print(l); f.print('\n'); count++; }
+      start = end + 1;
+    }
+    f.close();
+    if (!count) { LittleFS.remove(AIRCUT_PATH); sendErrorMsg("Air cut vuoto"); return; }
+    stream.mainTotal = stream.total;
+    stream.total  = count;
+    stream.aircut = true;
+    if (!beginStream(AIRCUT_PATH)) {
+      sendErrorMsg("Impossibile aprire il file air cut");
+      aircutEnd();
+      return;
+    }
+    DBG.printf("Air cut avviato: %d righe\n", count);
 
   } else if (type == "stream_pause") {
     // Sospende l'invio di nuove righe e mette GRBL in feed-hold; al resume
@@ -626,8 +678,10 @@ void loopStream() {
     broadcastProgress(true);
     JsonDocument doc;
     doc["type"] = "stream_done"; doc["total"] = stream.total;
+    doc["aircut"] = stream.aircut;
     broadcastJson(doc);
-    DBG.println(F("Job completato"));
+    DBG.println(stream.aircut ? F("Air cut completato") : F("Job completato"));
+    aircutEnd();
   }
 }
 
@@ -647,9 +701,43 @@ void streamAbort() {
   bool wasRunning = stream.running;
   streamReset();
   if (wasRunning) {
-    JsonDocument r; r["type"] = "stream_stopped";
+    JsonDocument r; r["type"] = "stream_stopped"; r["aircut"] = stream.aircut;
     broadcastJson(r);
   }
+  aircutEnd();
+}
+
+// Apre il file e avvia lo streaming (stato già azzerato da streamReset)
+bool beginStream(const char* path) {
+  streamReset();
+  stream.file = LittleFS.open(path, "r");
+  if (!stream.file) return false;
+  stream.running = true;
+  stream.lastAckMs = millis();
+  // '\n' iniziale: chiude un'eventuale riga parziale/spazzatura rimasta nel
+  // buffer di GRBL (disturbi sulla linea TX, comandi interrotti). Senza,
+  // GRBL la concatenerebbe alla riga 1 → error:2. La sua risposta viene
+  // scartata (flushAcks) e non conta come riga del job.
+  sendCmd("");
+  stream.txInFlight = 1;
+  stream.pendingLen.push_back(1);
+  stream.pendingTxt.push_back("");
+  stream.flushAcks = 1;
+  broadcastProgress(true);
+  return true;
+}
+
+// Fine air cut (completato, fermato o fallito): ripristina il job principale
+// e lo ri-annuncia alla UI, così Start rilancia il file originale.
+void aircutEnd() {
+  if (!stream.aircut) return;
+  stream.aircut = false;
+  stream.total  = stream.mainTotal;
+  if (stream.file) stream.file.close();
+  LittleFS.remove(AIRCUT_PATH);
+  JsonDocument r;
+  r["type"] = "file_ready"; r["lines"] = stream.total;
+  broadcastJson(r);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -670,8 +758,8 @@ String cleanGcodeLine(String line) {
   return line;
 }
 
-int countFileLines() {
-  File f = LittleFS.open(GCODE_PATH, "r");
+int countFileLines(const char* path) {
+  File f = LittleFS.open(path, "r");
   int n = 0;
   while (f && f.available()) if (f.read() == '\n') n++;
   if (f) f.close();
@@ -724,6 +812,7 @@ void broadcastProgress(bool force) {
   doc["lastError"] = stream.lastError;
   doc["errLine"]   = stream.errLine;
   doc["errText"]   = stream.errText;
+  doc["aircut"]    = stream.aircut;
   broadcastJson(doc);
 }
 
@@ -753,6 +842,10 @@ String buildStatusJson() {
   st["running"] = stream.running; st["paused"] = stream.paused;
   st["sent"] = stream.sent; st["acked"] = stream.acked; st["total"] = stream.total;
   st["lastError"] = stream.lastError; st["errLine"] = stream.errLine; st["errText"] = stream.errText;
+  st["aircut"] = stream.aircut;
+  JsonObject esp = doc["esp"].to<JsonObject>();
+  esp["cpu"] = espSt.cpu; esp["heap"] = espSt.heap;
+  esp["frag"] = espSt.frag; esp["maxblk"] = espSt.maxBlk;
   doc["rx_age"] = (uint32_t)(millis() - grblSt.lastRxMs);
   String out;
   serializeJson(doc, out);

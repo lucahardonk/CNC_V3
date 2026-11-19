@@ -166,6 +166,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 #sb{padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;
   letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--s3);
   color:var(--muted);background:transparent}
+/* Badge debug ESP (CPU/RAM) */
+#espb{padding:2px 8px;border-radius:20px;font-size:10px;border:1px solid var(--s3);
+  color:var(--muted);white-space:nowrap;cursor:default}
+/* Input non valido */
+.ni.bad{border-color:var(--rl)}
 /* Toast */
 #toast{position:fixed;bottom:14px;right:14px;background:var(--s2);
   border:1px solid var(--s3);border-radius:5px;padding:8px 14px;font-size:11px;
@@ -192,6 +197,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   <h1>CNC Remote</h1>
   <span style="color:var(--muted);font-size:10px">GRBL v1.1</span>
   <span id="sb">—</span>
+  <span id="espb" title="Debug ESP8266: in attesa dei dati">ESP —</span>
   <div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-left:auto">
     <button id="estop" onclick="emergencyStop()" title="Feed Hold — arresta il movimento in sicurezza">🛑 E-STOP</button>
     <div id="ws-dot"></div>
@@ -355,9 +361,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
       <div class="prog"><div class="pb" id="pb"></div></div>
       <div style="display:flex;gap:3px;flex-wrap:wrap">
         <button class="btn g sm" id="bpl" onclick="stStart()" disabled>▶ Start</button>
+        <button class="btn p sm" id="bac" onclick="airCut()" disabled title="Ricarica il file G-code per abilitare l'air cut">⬚ Air cut ingombro</button>
         <button class="btn w sm" id="bpa" onclick="stPause()" disabled>⏸ Pausa</button>
         <button class="btn d sm" onclick="stStop()">⏹ Stop</button>
         <button class="btn gh sm" onclick="clrGc()">🗑 Svuota</button>
+      </div>
+      <div style="display:flex;gap:5px;align-items:center;font-size:9px;color:var(--muted)"
+        title="Parametri dell'air cut: perimetro XY del file a quota di sicurezza, mandrino spento">
+        Air cut: Z sicurezza
+        <input type="text" inputmode="decimal" id="acz" class="ni" style="width:52px" value="5">mm
+        &nbsp;F
+        <input type="text" inputmode="decimal" id="acf" class="ni" style="width:58px" value="1000">mm/min
       </div>
       <div id="jobst" style="display:none;margin-top:4px;padding:4px 6px;border:1px solid var(--s3);border-radius:4px;font-size:11px;line-height:1.4">
         <span id="jobtx"></span>
@@ -431,6 +445,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
         <button class="sb" onclick="ss(5)">5</button>
         <button class="sb" onclick="ss(10)">10</button>
         <button class="sb" onclick="ss(50)">50</button>
+        <input type="text" inputmode="decimal" id="stc" class="ni" style="width:52px;flex:0 0 52px"
+          value="1" title="Step personalizzato (0.001–500 mm, virgola o punto): Invio per applicare">
       </div>
       <div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">
         <span style="font-size:9px;color:var(--muted)">Jog F:</span>
@@ -526,20 +542,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
     </div>
   </div>
 
-  <!-- Gamepad -->
-  <div class="pnl" style="flex:0 0 auto" id="gppnl">
-    <div class="pnl-t">🎮 Gamepad
-      <span id="gpst" style="margin-left:auto;font-size:9px;color:var(--muted)">Disconnesso</span>
-    </div>
-    <div class="pnl-b" style="font-size:9px;line-height:1.65;padding:7px">
-      <div style="color:var(--muted)">Mappa T-29 / PS4 (Gamepad API):</div>
-      <div>Stick sx → Jog XY &nbsp; R1/L1 → Z+/Z−</div>
-      <div>○ → Feed Hold &nbsp; △ → Cycle Start</div>
-      <div>D-pad → Jog singolo &nbsp; □/× → Step −/+</div>
-      <div id="gphi" style="color:var(--ol);margin-top:5px">Accoppia via BT del SO, poi premi un tasto sul controller.</div>
-    </div>
-  </div>
-
 </div><!-- /col-r -->
 </div><!-- /grid -->
 </div><!-- /app -->
@@ -586,6 +588,7 @@ let ws, state = {
 };
 let jogStep = 1;
 let gcLines = [];
+let gcText = '';          // testo del G-code caricato da questa pagina (per l'air cut)
 let spOn = false, flOn = false;
 let settings = {};
 
@@ -650,6 +653,7 @@ function onMsg(m) {
       g('si').textContent = m.lines + ' linee caricate';
       g('bpl').disabled = false;
       g('bpa').disabled = true;
+      updAirBtn();
       clog('File pronto: '+m.lines+' linee','ok');
       break;
     case 'stream_progress':
@@ -657,6 +661,7 @@ function onMsg(m) {
                     total:m.total, lastError:m.lastError||0, errLine:m.errLine||0, errText:m.errText||''});
       break;
     case 'stream_done':
+      if (m.aircut) { clog('✅ Air cut ingombro completato','ok'); toast('Air cut completato!'); break; }
       stDone = true;
       updProg(m.total, m.total, m.total);
       g('bpl').disabled = false;
@@ -665,7 +670,7 @@ function onMsg(m) {
       g('bpa').disabled = true;
       break;
     case 'stream_stopped':
-      clog('⏹ Streaming interrotto','wn');
+      clog(m.aircut ? '⏹ Air cut interrotto' : '⏹ Streaming interrotto','wn');
       syncStreamUi({running:false, paused:false, sent:0, acked:0,
                     total:(state.stream||{}).total||0, lastError:0, errLine:0});
       break;
@@ -699,6 +704,7 @@ function updStatus(s) {
     }
   }
   spOn = s.acc.spindle; flOn = s.acc.flood;
+  if (s.esp) updEsp(s.esp);
   renderStatus();
 }
 
@@ -711,6 +717,7 @@ function syncStreamUi(st) {
   g('bpl').disabled = run || !(st.total > 0);
   g('bpa').disabled = !run;
   g('bpa').textContent = run && pau ? '▶ Riprendi' : '⏸ Pausa';
+  updAirBtn();
   if (run) { stDone = false; updProg(st.sent, st.acked, st.total); }
   else if (!stDone) {
     g('pb').style.width = '0%'; g('spc').textContent = '0%';
@@ -719,24 +726,38 @@ function syncStreamUi(st) {
   const box = g('jobst'), tx = g('jobtx');
   if (!run) { box.style.display = 'none'; return; }
   box.style.display = '';
+  const ac = st.aircut ? '⬚ <b>Air cut ingombro</b> — ' : '';
   if (pau && st.lastError) {
     const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-    tx.innerHTML = '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga G-code '+st.errLine+
+    tx.innerHTML = ac + '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga G-code '+st.errLine+
       (st.errText ? ': <code>'+esc(st.errText)+'</code>' : '')+') — '+
       errTxt(st.lastError)+'. Correggi e premi Riprendi o Stop.'+
       '<br><small>Il numero conta solo le righe di G-code (commenti esclusi).</small>';
     box.style.borderColor = 'var(--er, #f85149)';
   } else if (pau) {
-    tx.textContent = '⏸ In pausa — premi Riprendi o Stop';
+    tx.innerHTML = ac + '⏸ In pausa — premi Riprendi o Stop';
     box.style.borderColor = '#d29922';
   } else {
-    tx.textContent = '▶ Job in corso ('+st.acked+'/'+st.total+')';
+    tx.innerHTML = st.aircut ? '⬚ <b>Air cut ingombro in corso</b> ('+st.acked+'/'+st.total+') — mandrino spento'
+                             : '▶ Job in corso ('+st.acked+'/'+st.total+')';
     box.style.borderColor = '#58a6ff';
   }
 }
 function forceClear() {
   if (!confirm('Azzerare lo stato del job sul bridge? Non invia nulla a GRBL: se la macchina si sta muovendo usa E-STOP.')) return;
   send({type:'stream_force_clear'});
+}
+
+// Badge debug ESP: carico CPU (stima) e heap libero; colore per soglie
+function updEsp(e) {
+  const b = g('espb'), kb = Math.round((e.heap||0)/1024);
+  b.textContent = 'ESP CPU '+e.cpu+'% · RAM '+kb+' kB';
+  b.title = 'Debug ESP8266 (aggiornato ~1/s)\nCarico CPU stimato: '+e.cpu+'%\nHeap libero: '+e.heap+
+    ' byte\nFrammentazione heap: '+e.frag+'%\nBlocco libero max: '+e.maxblk+' byte';
+  const lvl = (e.cpu >= 80 || e.heap < 6000 || e.frag >= 50) ? 2
+            : (e.cpu >= 50 || e.heap < 12000 || e.frag >= 30) ? 1 : 0;
+  const col = ['#3fb950','#d29922','#f85149'][lvl];
+  b.style.color = col; b.style.borderColor = col+'66'; b.style.background = col+'22';
 }
 
 function renderStatus() {
@@ -794,10 +815,32 @@ function fmt(v) { return (parseFloat(v)||0).toFixed(3).padStart(8,' '); }
 // ═══════════════════════════════════════════════════════════════════════════
 //  Jog
 // ═══════════════════════════════════════════════════════════════════════════
+const STEPS = [.01,.1,1,5,10,50];
 function ss(v) {
   jogStep = v;
   g('stps').querySelectorAll('.sb').forEach(b =>
     b.classList.toggle('ac', parseFloat(b.textContent) === v));
+  const ci = g('stc'); ci.value = String(v); ci.classList.remove('bad');
+}
+// Numero con virgola o punto decimale; NaN se non valido
+function pnum(v) {
+  const t = String(v).trim().replace(',', '.');
+  return /^[-+]?(\d+\.?\d*|\.\d+)$/.test(t) ? parseFloat(t) : NaN;
+}
+// Applica lo step personalizzato (0.001–500 mm): spegne i preset
+function applyStepInput() {
+  const ci = g('stc'), v = pnum(ci.value);
+  if (!(v >= 0.001 && v <= 500)) { ci.classList.add('bad'); return; }
+  ci.classList.remove('bad');
+  jogStep = Math.round(v*1000)/1000;
+  g('stps').querySelectorAll('.sb').forEach(b => b.classList.remove('ac'));
+}
+// '[' / ']': preset precedente/successivo rispetto allo step attuale
+function stepPreset(dir) {
+  const e = 1e-9;
+  const v = dir < 0 ? [...STEPS].reverse().find(p => p < jogStep - e)
+                    : STEPS.find(p => p > jogStep + e);
+  if (v !== undefined) ss(v);
 }
 
 function jog(axesStr) {
@@ -841,6 +884,7 @@ function uploadGc(name, text) {
       clog('File pronto: '+j.lines+' linee', 'ok');
       g('si').textContent = j.lines+' linee — '+name;
       g('bpl').disabled = false;
+      setGcText(text);
     })
     .catch(e => clog('Errore upload: '+e,'er'));
 }
@@ -857,6 +901,7 @@ function sendGcodeText() {
   if (!txt) return;
   parseViz(txt);
   send({type:'gcode_text', text:txt});
+  setGcText(txt);
   clog('G-code dall\'editor inviato al controller','tx');
 }
 
@@ -878,10 +923,101 @@ function stStop() {
 }
 function clrGc() {
   gcLines = []; viewer.clearPath();
+  setGcText('');
   g('si').textContent = 'Nessun file';
   g('bpl').disabled = true;
   updProg(0,0,0);
 }
+// ── Air cut ingombro ───────────────────────────────────────────────────────
+// Analizza il G-code: rettangolo XY dei movimenti di taglio (G1/G2/G3, archi
+// approssimati come nel viewer; se assenti, di tutti i movimenti), quota di
+// sicurezza dal commento "; Safe height: Nmm" o, in mancanza, Z massima.
+function gcAnalyze(text) {
+  const sh = /;\s*safe\s*height\s*:\s*([-+]?[0-9]*[.,]?[0-9]+)\s*mm/i.exec(text);
+  let cur = {x:0,y:0,z:0}, mode = 0, abs = true, zMax = -Infinity;
+  const bc = {x0:Infinity,x1:-Infinity,y0:Infinity,y1:-Infinity}, ba = {...bc};
+  const add = (b,x,y) => { b.x0=Math.min(b.x0,x); b.x1=Math.max(b.x1,x); b.y0=Math.min(b.y0,y); b.y1=Math.max(b.y1,y); };
+  for (const raw of text.split('\n')) {
+    let ln = raw.toUpperCase();
+    const ci = ln.indexOf(';'); if (ci >= 0) ln = ln.substring(0, ci);
+    ln = ln.replace(/\([^)]*\)?/g, '').trim();
+    if (!ln) continue;
+    const w = {}; const re = /([A-Z])\s*([-+]?[0-9]*\.?[0-9]+)/g; let m;
+    while ((m = re.exec(ln)) !== null) {
+      const v = parseFloat(m[2]);
+      if (m[1] === 'G') {
+        if (v === 90) abs = true; else if (v === 91) abs = false;
+        else if ([0,1,2,3].includes(v)) mode = v;
+      } else w[m[1]] = v;
+    }
+    if (!('X' in w || 'Y' in w || 'Z' in w)) continue;
+    const n = {x:'X' in w?(abs?w.X:cur.x+w.X):cur.x,
+               y:'Y' in w?(abs?w.Y:cur.y+w.Y):cur.y,
+               z:'Z' in w?(abs?w.Z:cur.z+w.Z):cur.z};
+    zMax = Math.max(zMax, n.z);
+    add(ba, cur.x, cur.y); add(ba, n.x, n.y);
+    if (mode >= 1) {
+      add(bc, cur.x, cur.y); add(bc, n.x, n.y);
+      if (mode >= 2) {                       // arco: 32 segmenti come il viewer
+        const i = w.I||0, j = w.J||0, cx = cur.x+i, cy = cur.y+j, r = Math.hypot(i, j);
+        const a0 = Math.atan2(cur.y-cy, cur.x-cx);
+        let da = Math.atan2(n.y-cy, n.x-cx) - a0;
+        if (mode === 2 && da > 0) da -= 2*Math.PI;
+        if (mode === 3 && da < 0) da += 2*Math.PI;
+        for (let k = 1; k <= 32; k++) { const a = a0 + k/32*da; add(bc, cx+r*Math.cos(a), cy+r*Math.sin(a)); }
+      }
+    }
+    cur = n;
+  }
+  const box = isFinite(bc.x0) ? bc : (isFinite(ba.x0) ? ba : null);
+  const safe = sh ? pnum(sh[1]) : (isFinite(zMax) ? zMax : NaN);
+  return {box, safe};
+}
+function setGcText(t) {
+  gcText = t || '';
+  if (gcText) {
+    const a = gcAnalyze(gcText);
+    if (isFinite(a.safe)) { g('acz').value = String(Math.round(a.safe*1000)/1000); g('acz').classList.remove('bad'); }
+  }
+  updAirBtn();
+}
+function updAirBtn() {
+  const b = g('bac'), st = state.stream || {};
+  const ok = !!gcText && gcAnalyze(gcText).box;
+  b.disabled = !!st.running || !(st.total > 0) || !ok;
+  b.title = !gcText ? 'Testo G-code non disponibile in questa pagina: ricarica il file per abilitare l\'air cut'
+          : !ok ? 'Nessun movimento XY nel file'
+          : st.running ? 'Job in corso'
+          : 'Percorre il perimetro XY del file alla quota di sicurezza, mandrino spento';
+}
+function airCut() {
+  if (!gcText) { toast('Ricarica il file G-code per usare l\'air cut'); return; }
+  const st = state.stream || {};
+  if (st.running) { toast('Job in corso: air cut non avviabile'); return; }
+  if (state.grblState === 'Alarm' || state.grblState === 'Disconnected') {
+    toast('GRBL non pronto (Alarm/Disconnected): sblocca con $X o Home'); return;
+  }
+  const a = gcAnalyze(gcText);
+  if (!a.box) { toast('Nessun movimento XY nel file'); return; }
+  const zi = g('acz'), fi = g('acf'), z = pnum(zi.value), f = pnum(fi.value);
+  const zOk = z > 0 && z <= 200, fOk = f >= 1 && f <= 5000;
+  zi.classList.toggle('bad', !zOk); fi.classList.toggle('bad', !fOk);
+  if (!zOk) { toast('Quota di sicurezza non valida (0–200 mm)'); return; }
+  if (!fOk) { toast('Feed non valido (1–5000 mm/min)'); return; }
+  const r = v => (Math.round(v*1000)/1000).toFixed(3).replace(/\.?0+$/, '') || '0';
+  const {x0,x1,y0,y1} = a.box;
+  if (!confirm('Air cut ingombro (mandrino spento)\n\n'+
+      'Rettangolo: '+r(x1-x0)+' × '+r(y1-y0)+' mm\n'+
+      'X '+r(x0)+' … '+r(x1)+'   Y '+r(y0)+' … '+r(y1)+' (coordinate lavoro)\n'+
+      'Quota Z: '+r(z)+' mm   Feed: '+r(f)+' mm/min\n\n'+
+      'Alla fine torna a X0 Y0 restando a Z '+r(z)+'. Avviare?')) return;
+  const txt = ['M5', 'G21 G90', 'G0 Z'+r(z), 'G0 X'+r(x0)+' Y'+r(y0),
+    'G1 X'+r(x1)+' Y'+r(y0)+' F'+r(f), 'G1 X'+r(x1)+' Y'+r(y1),
+    'G1 X'+r(x0)+' Y'+r(y1), 'G1 X'+r(x0)+' Y'+r(y0), 'G0 X0 Y0'].join('\n');
+  send({type:'aircut', text:txt});
+  clog('⬚ Air cut ingombro richiesto: '+r(x1-x0)+'×'+r(y1-y0)+' mm a Z '+r(z),'ok');
+}
+
 function updProg(sent, acked, total) {
   const pct = total > 0 ? Math.round(100*acked/total) : 0;
   g('pb').style.width = pct+'%';
@@ -1430,53 +1566,10 @@ document.addEventListener('keydown', e => {
       jog((nm[e.code?.replace('Numpad','')]||nm[e.key])[0]);
     }
     // Step size shortcuts
-    if (e.key==='[') { const steps=[.01,.1,1,5,10,50]; const i=steps.indexOf(jogStep);
-      if(i>0) ss(steps[i-1]); }
-    if (e.key===']') { const steps=[.01,.1,1,5,10,50]; const i=steps.indexOf(jogStep);
-      if(i<steps.length-1) ss(steps[i+1]); }
+    if (e.key==='[') stepPreset(-1);
+    if (e.key===']') stepPreset(1);
   }
 });
-
-// ═══ Gamepad (PS4 / T-29) ═══
-const GPD={idx:-1,btn:Array(20).fill(false),wasMoving:false};
-const GPMAP={CIRCLE:1,TRIANGLE:3,SQUARE:2,CROSS:0,L1:4,R1:5,SHARE:8,DU:12,DD:13,DL:14,DR:15};
-function gpUpd(){const el=g('gpst'),hi=g('gphi');if(!el)return;
-  el.textContent=GPD.idx>=0?'✅ Connesso':'Disconnesso';
-  el.style.color=GPD.idx>=0?'var(--gl)':'var(--muted)';
-  if(hi)hi.style.display=GPD.idx>=0?'none':'block';}
-window.addEventListener('gamepadconnected',e=>{GPD.idx=e.gamepad.index;clog('🎮 Gamepad: '+e.gamepad.id,'ok');toast('Gamepad connesso!');gpUpd();});
-window.addEventListener('gamepaddisconnected',e=>{if(e.gamepad.index===GPD.idx){GPD.idx=-1;clog('🎮 Gamepad disconnesso','wn');gpUpd();}});
-function pollGP(){
-  if(GPD.idx<0)return;
-  const gp=navigator.getGamepads()[GPD.idx];if(!gp)return;
-  const ax=gp.axes,bt=gp.buttons;
-  const DZ=0.25;
-  const lx=Math.abs(ax[0])>DZ?ax[0]:0;
-  const ly=Math.abs(ax[1])>DZ?ax[1]:0;
-  const rz=Math.abs(ax[3])>DZ?ax[3]:0;
-  const f=parseFloat(g('jf').value)||1000;
-  if(lx||ly||rz){
-    let axes='';
-    if(lx)axes+='X'+(lx*jogStep).toFixed(3)+' ';
-    if(ly)axes+='Y'+(-ly*jogStep).toFixed(3)+' ';
-    if(rz)axes+='Z'+(-rz*jogStep).toFixed(3)+' ';
-    send({type:'jog',axes:axes.trim(),feed:f});
-  } else if(GPD.wasMoving){send({type:'jog_cancel'});GPD.wasMoving=false;}
-  GPD.wasMoving=!!(lx||ly||rz);
-  const prev=GPD.btn;
-  const pressed=i=>bt[i]?.pressed&&!prev[i];
-  if(pressed(GPMAP.CIRCLE)){rt(0x21);clog('🎮 Feed Hold','wn');}
-  if(pressed(GPMAP.TRIANGLE)){rt(0x7E);clog('🎮 Cycle Start','ok');}
-  if(pressed(GPMAP.SHARE)){rt(0x18);clog('🎮 Reset','wn');}
-  if(pressed(GPMAP.DU))jog('Y1'); if(pressed(GPMAP.DD))jog('Y-1');
-  if(pressed(GPMAP.DL))jog('X-1');if(pressed(GPMAP.DR))jog('X1');
-  if(pressed(GPMAP.R1))jog('Z1'); if(pressed(GPMAP.L1))jog('Z-1');
-  const steps=[.01,.1,1,5,10,50];
-  if(pressed(GPMAP.SQUARE)){const i=steps.indexOf(jogStep);if(i>0)ss(steps[i-1]);}
-  if(pressed(GPMAP.CROSS)){const i=steps.indexOf(jogStep);if(i<steps.length-1)ss(steps[i+1]);}
-  GPD.btn=bt.map(b=>b.pressed);
-}
-setInterval(pollGP,100);
 
 // ═══ Divisori colonne ridimensionabili ═══
 function initDividers(){
@@ -1509,6 +1602,12 @@ window.addEventListener('load', () => {
   initDividers();
   // Listener enter per MDI
   g('mdi').addEventListener('keydown', e => { if(e.key==='Enter') sendMDI(); });
+  // Step jog personalizzato: Invio o change applicano, digitando si toglie il rosso
+  const ci = g('stc');
+  ci.addEventListener('keydown', e => { if(e.key==='Enter') { applyStepInput(); ci.blur(); } });
+  ci.addEventListener('change', applyStepInput);
+  ci.addEventListener('input', () => ci.classList.remove('bad'));
+  ['acz','acf'].forEach(id => g(id).addEventListener('input', () => g(id).classList.remove('bad')));
 });
 </script>
 </body>
