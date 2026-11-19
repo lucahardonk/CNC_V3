@@ -20,6 +20,7 @@ export const Layers = {
   list: (pid) => d(api.get(`/projects/${pid}/layers`)),
   create: (pid, body) => d(api.post(`/projects/${pid}/layers`, body)),
   update: (id, body) => d(api.put(`/layers/${id}`, body)),
+  patch: (id, body) => d(api.patch(`/layers/${id}`, body)),
   remove: (id) => d(api.delete(`/layers/${id}`)),
   entities: (id) => d(api.get(`/layers/${id}/entities`)),
   saveEntities: (id, entities) => d(api.post(`/layers/${id}/entities`, { entities, replace: true })),
@@ -74,6 +75,28 @@ export const Export = {
     return { blob: r.data, filename: m ? m[1] : 'layer.nc' }
   },
 }
+
+// Scarica un .nc (GET) con il nome file dal Content-Disposition; gli errori del backend arrivano come Blob JSON
+const downloadNc = async (url, fallback) => {
+  try {
+    const r = await api.get(url, { responseType: 'blob' })
+    const m = /filename="?([^";]+)"?/.exec(r.headers['content-disposition'] || '')
+    const name = m ? m[1] : fallback
+    const href = URL.createObjectURL(r.data)
+    const el = Object.assign(document.createElement('a'), { href, download: name })
+    document.body.appendChild(el); el.click(); el.remove()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
+    return name
+  } catch (e) {
+    if (e?.response?.data instanceof Blob) {
+      try { e.response.data = JSON.parse(await e.response.data.text()) } catch { /* noop */ }
+    }
+    throw e
+  }
+}
+// .nc generati con i parametri di taglio salvati nei layer
+Export.layerNc = (layerId) => downloadNc(`/export/layer/${layerId}`, 'layer.nc')
+Export.projectNc = (projectId) => downloadNc(`/export/all/${projectId}`, 'progetto_all.nc')
 
 export const exportUrl = '/api/export'
 export const importZip = (file) => {

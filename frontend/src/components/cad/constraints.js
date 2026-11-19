@@ -149,10 +149,10 @@ export function measureDim(dim, byId) {
     const d = t.data
     switch (dim.param) {
       case 'length': return Math.hypot(d.x2 - d.x1, d.y2 - d.y1)
-      case 'width': return d.w
-      case 'height': return d.h
-      case 'diameter': return 2 * d.r
-      case 'radius': return d.r
+      case 'width': return Math.abs(d.w)
+      case 'height': return Math.abs(d.h)
+      case 'diameter': return 2 * Math.abs(d.r)
+      case 'radius': return Math.abs(d.r)
       default: return null
     }
   }

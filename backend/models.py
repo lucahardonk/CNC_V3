@@ -39,6 +39,14 @@ class Layer(Base):
     is_complete = Column(Boolean, nullable=False, default=False)
     # layer di disegno (stile AutoCAD) interni al disegno: [{id, name, color, visible, locked}]
     draw_layers = Column(JSON, nullable=True)
+    # parametri di taglio indipendenti per layer (usati da export .nc e anteprima percorso)
+    tool_diameter = Column(Float, nullable=False, default=3.175)   # mm
+    tool_type = Column(String, nullable=False, default="flat")     # flat | ball | vbit
+    feed_rate = Column(Float, nullable=False, default=600.0)       # mm/min
+    spindle_rpm = Column(Integer, nullable=False, default=12000)
+    z_safe = Column(Float, nullable=False, default=5.0)            # mm
+    z_depth = Column(Float, nullable=False, default=-2.0)          # mm, profondità finale (negativa)
+    z_pass_depth = Column(Float, nullable=False, default=1.0)      # mm per passata (positivo)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     project = relationship("Project", back_populates="layers")

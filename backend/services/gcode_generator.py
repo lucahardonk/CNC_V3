@@ -399,14 +399,39 @@ def _layer_comment(lid: str, info: dict[str, dict]) -> str:
     return f"; DLAYER {lid} {color} {name}"
 
 
-def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[str, dict] | None = None) -> Result:
-    """layer_info (opzionale): {id_layer_disegno: {name, color}}. Se presente, ogni percorso viene
-    preceduto da un commento `; DLAYER <id> <colore> <nome>` (usato dal viewer 3D per colorare i
-    percorsi per layer). Le entità indicano il loro layer con la chiave `dlayer`."""
+@dataclass
+class Moves:
+    """Movimenti di taglio di un layer (senza header/footer/mandrino)."""
+    lines: list[str]
+    levels: list[float]
+    rapid_len: float
+    cut_len: float
+    cut_time: float
+    warnings: list[str]
+    end_pos: tuple[float, float]
+
+
+def depth_levels(depth_total: float, depth_per_pass: float) -> list[float]:
+    """Quote Z delle passate: incrementali di depth_per_pass fino a -depth_total (ultima esatta)."""
+    levels, z = [], 0.0
+    while z > -depth_total + EPS:
+        z = max(z - depth_per_pass, -depth_total)
+        levels.append(round(z, 4))
+    return levels
+
+
+def generate_moves(entities: list[dict[str, Any]], p: Params, layer_info: dict[str, dict] | None = None,
+                   start_pos: tuple[float, float] = (0.0, 0.0)) -> Moves:
+    """Calcola i percorsi e li emette come G0/G1 multi-passata (Z incrementale fino a -depth_total).
+    Parte e termina a Z = safe_height. Non accende/spegne il mandrino."""
     if p.tool_diameter <= 0:
         raise ValueError("Diametro utensile non valido")
     if p.depth_per_pass <= 0:
         raise ValueError("Profondità di passata non valida")
+    if p.depth_total <= 0:
+        raise ValueError("Profondità finale non valida (z_depth deve essere negativa)")
+    if p.feed_rate <= 0 or p.plunge_rate <= 0:
+        raise ValueError("Feed rate non valido")
     radius = p.tool_diameter / 2.0
     region, open_lines, bridges = build_geometry(entities)
     warnings: list[str] = []
@@ -426,11 +451,7 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[s
     if p.depth_total > p.stock_z:
         warnings.append(f"Profondità {p.depth_total}mm maggiore dello spessore stock {p.stock_z}mm!")
 
-    # livelli di profondità
-    levels, z = [], 0.0
-    while z > -p.depth_total + EPS:
-        z = max(z - p.depth_per_pass, -p.depth_total)
-        levels.append(round(z, 4))
+    levels = depth_levels(p.depth_total, p.depth_per_pass)
     z_tab = round(-p.depth_total + p.bridge_height, 4)
     if bridges is not None and p.operation == "pocket":
         warnings.append("I ponticelli sono ignorati nelle pocket.")
@@ -441,26 +462,10 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[s
         sources = _layer_sources(entities)
         tags = [_path_layer(pa, sources) if sources else "0" for pa in paths]
 
-    op_names = {"profile_on": "Profilo sul centro", "profile_inside": "Profilo interno",
-                "profile_outside": "Profilo esterno", "pocket": f"Pocket ({p.pocket_direction})"}
-    out = [
-        "; CNC V3 - Generated G-code",
-        f"; Operation: {op_names.get(p.operation, p.operation)}",
-        f"; Tool: {p.tool_name} D={_f(p.tool_diameter)}mm",
-        f"; Material: {p.material}",
-        f"; Feed: {_f(p.feed_rate)}mm/min, Plunge: {_f(p.plunge_rate)}mm/min, RPM: {_f(p.spindle_rpm)}",
-        f"; Depth total: {_f(p.depth_total)}mm, Pass depth: {_f(p.depth_per_pass)}mm, Passes: {len(levels)}",
-        f"; Safe height: {_f(p.safe_height)}mm" + (f", Bridge height: {_f(p.bridge_height)}mm" if bridges is not None else ""),
-        "; Origin: X0 Y0 = stock center, Z0 = stock top surface",
-        f"; Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "G21 G90 G17 G94",
-        f"M3 S{int(p.spindle_rpm)}",
-        "G4 P2",
-        f"G0 Z{_f(p.safe_height)}",
-    ]
+    out: list[str] = []
     rapid_len = cut_len = 0.0
     cut_time = 0.0
-    pos = (0.0, 0.0)
+    pos = start_pos
     curz = p.safe_height
     for li, zl in enumerate(levels, 1):
         out.append(f"; --- Pass {li}/{len(levels)} Z={_f(zl)} ---")
@@ -502,13 +507,111 @@ def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[s
             pos = prev
         out.append(f"G0 Z{_f(p.safe_height)}")
         curz = p.safe_height
-    out += [f"G0 Z{_f(p.safe_height)}", "G0 X0 Y0", "M5", "M30"]
-    rapid_time = rapid_len / 3000.0
+    return Moves(out, levels, rapid_len, cut_len, cut_time, warnings, pos)
+
+
+OP_NAMES = {"profile_on": "Profilo sul centro", "profile_inside": "Profilo interno",
+            "profile_outside": "Profilo esterno", "pocket": "Pocket"}
+
+
+def generate_gcode(entities: list[dict[str, Any]], p: Params, layer_info: dict[str, dict] | None = None) -> Result:
+    """layer_info (opzionale): {id_layer_disegno: {name, color}}. Se presente, ogni percorso viene
+    preceduto da un commento `; DLAYER <id> <colore> <nome>` (usato dal viewer 3D per colorare i
+    percorsi per layer). Le entità indicano il loro layer con la chiave `dlayer`."""
+    m = generate_moves(entities, p, layer_info)
+    bridges_note = any(e.get("type") == "bridge" for e in entities) and p.operation != "pocket"
+    op = OP_NAMES.get(p.operation, p.operation) + (f" ({p.pocket_direction})" if p.operation == "pocket" else "")
+    out = [
+        "; CNC V3 - Generated G-code",
+        f"; Operation: {op}",
+        f"; Tool: {p.tool_name} D={_f(p.tool_diameter)}mm",
+        f"; Material: {p.material}",
+        f"; Feed: {_f(p.feed_rate)}mm/min, Plunge: {_f(p.plunge_rate)}mm/min, RPM: {_f(p.spindle_rpm)}",
+        f"; Depth total: {_f(p.depth_total)}mm, Pass depth: {_f(p.depth_per_pass)}mm, Passes: {len(m.levels)}",
+        f"; Safe height: {_f(p.safe_height)}mm" + (f", Bridge height: {_f(p.bridge_height)}mm" if bridges_note else ""),
+        "; Origin: X0 Y0 = stock center, Z0 = stock top surface",
+        f"; Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "G21 G90 G17 G94",
+        f"M3 S{int(p.spindle_rpm)}",
+        "G4 P2",
+        f"G0 Z{_f(p.safe_height)}",
+        *m.lines,
+        f"G0 Z{_f(p.safe_height)}", "G0 X0 Y0", "M5", "M30",
+    ]
     return Result(
         gcode="\n".join(out) + "\n",
         line_count=len(out),
-        path_length_mm=round(cut_len + rapid_len, 1),
-        cut_length_mm=round(cut_len, 1),
-        estimated_time_min=round(cut_time + rapid_time, 2),
-        warnings=warnings,
+        path_length_mm=round(m.cut_len + m.rapid_len, 1),
+        cut_length_mm=round(m.cut_len, 1),
+        estimated_time_min=round(m.cut_time + m.rapid_len / 3000.0, 2),
+        warnings=m.warnings,
     )
+
+
+@dataclass
+class LayerJob:
+    """Un layer di lavorazione da esportare nel programma multi-layer."""
+    name: str
+    number: int  # numero utensile (T<n>), 1-based
+    entities: list[dict[str, Any]]
+    params: Params
+    tool_type: str = "flat"
+    layer_info: dict[str, dict] | None = None
+
+
+TOOL_TYPE_NAMES = {"flat": "fresa piatta", "ball": "fresa sferica", "vbit": "fresa a V"}
+
+
+def _clean(s: str) -> str:
+    """Testo sicuro per un commento G-code GRBL (niente parentesi/newline)."""
+    return str(s).replace("\n", " ").replace("(", "[").replace(")", "]").strip()
+
+
+def generate_program(jobs: list[LayerJob], title: str, pause_between: bool = True) -> Result:
+    """Programma G-code con uno o più layer in sequenza, compatibile GRBL 1.1h (niente M6):
+
+        G21 G90 G17 G94
+        per ogni layer:  ; Layer  /  ; T<n> (commento)  /  M5  /  G0 Z<safe>  /  M0 (cambio punta)
+                         G0 X0 Y0  /  M3 S<rpm>  /  G4 P2  /  percorso multi-passata  /  M5  /  G0 Z<safe>
+        M2
+
+    pause_between=False omette l'M0 (utile per l'export di un singolo layer)."""
+    if not jobs:
+        raise ValueError("Nessun layer da esportare")
+    out = [
+        "; CNC V3 - Generated G-code",
+        f"; {_clean(title)}",
+        f"; Layers: {len(jobs)}",
+        "; Origin: X0 Y0 = stock center, Z0 = stock top surface",
+        f"; Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "G21 G90 G17 G94",
+    ]
+    rapid = cut = t = 0.0
+    warnings: list[str] = []
+    pos = (0.0, 0.0)
+    for job in jobs:
+        p = job.params
+        try:
+            m = generate_moves(job.entities, p, job.layer_info, start_pos=(0.0, 0.0))
+        except ValueError as exc:
+            raise ValueError(f"Layer \"{job.name}\": {exc}") from exc
+        warnings += [f"Layer \"{job.name}\": {w}" for w in m.warnings]
+        out += [
+            "",
+            f"; ===== Layer {job.number}: {_clean(job.name)} =====",
+            f"; T{job.number} - {TOOL_TYPE_NAMES.get(job.tool_type, job.tool_type)} D={_f(p.tool_diameter)}mm"
+            f" | {OP_NAMES.get(p.operation, p.operation)} | F{_f(p.feed_rate)} S{int(p.spindle_rpm)}"
+            f" | Z {_f(-p.depth_total)}mm in {len(m.levels)} passate da {_f(p.depth_per_pass)}mm",
+            "M5",
+            f"G0 Z{_f(p.safe_height)}",
+        ]
+        if pause_between:
+            out.append(f"M0 ; cambio punta: monta T{job.number} D={_f(p.tool_diameter)}mm, poi riprendi (cycle start)")
+        out += ["G0 X0 Y0", f"M3 S{int(p.spindle_rpm)}", "G4 P2", *m.lines, "M5", f"G0 Z{_f(p.safe_height)}"]
+        rapid += m.rapid_len + math.dist(pos, (0.0, 0.0))
+        pos = m.end_pos
+        cut += m.cut_len
+        t += m.cut_time
+    out += ["", "G0 X0 Y0", "M2"]
+    return Result(gcode="\n".join(out) + "\n", line_count=len(out), path_length_mm=round(cut + rapid, 1),
+                  cut_length_mm=round(cut, 1), estimated_time_min=round(t + rapid / 3000.0, 2), warnings=warnings)

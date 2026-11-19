@@ -1,0 +1,1613 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>CNC Remote — GRBL Bridge</title>
+<style>
+/* ══ Variabili ══════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#0d1117;--s1:#161b22;--s2:#21262d;--s3:#30363d;
+  --text:#c9d1d9;--muted:#6e7681;
+  --green:#2ea043;--gl:#3fb950;
+  --red:#da3633;--rl:#f85149;
+  --orange:#9e6a03;--ol:#d29922;
+  --blue:#1f6feb;--bl:#58a6ff;
+  --cyan:#0d7377;--cl:#17c0d0;
+  --r:6px;--mono:'JetBrains Mono','Fira Code',Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:var(--mono);font-size:12px}
+/* ══ Layout ════════════════════════════════════════════════════════════════ */
+#app{display:grid;grid-template-rows:44px 1fr;height:100vh}
+#hdr{background:var(--s1);border-bottom:1px solid var(--s3);display:flex;
+  align-items:center;gap:10px;padding:0 12px;flex-shrink:0}
+#hdr h1{font-size:14px;font-weight:700;color:var(--bl)}
+#grid{display:grid;grid-template-columns:var(--cw-l,258px) 4px 1fr 4px var(--cw-r,272px);padding:4px;
+  overflow:hidden;min-height:0}
+.col-div{cursor:col-resize;background:transparent;border-radius:2px;transition:background .15s;user-select:none}
+.col-div:hover,.col-div.cdrag{background:#1f6feb44}
+/* E-STOP */
+#estop{font-size:13px;font-weight:900;padding:5px 18px;background:#7b1c1c;border:2px solid var(--rl);
+  border-radius:5px;color:#fff;cursor:pointer;letter-spacing:.06em;box-shadow:0 0 10px #f8514955;
+  font-family:var(--mono);user-select:none;flex-shrink:0}
+#estop:hover{background:var(--red);box-shadow:0 0 16px #f8514999}
+#estop:active{transform:scale(.96);background:var(--rl)}
+/* ══ Panel ═════════════════════════════════════════════════════════════════ */
+.pnl{background:var(--s1);border:1px solid var(--s3);border-radius:var(--r);
+  display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.pnl-t{background:var(--s2);border-bottom:1px solid var(--s3);padding:5px 10px;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);display:flex;align-items:center;gap:6px;flex-shrink:0}
+.pnl-b{flex:1;overflow-y:auto;padding:8px;min-height:0}
+/* ══ Colonna sinistra ══════════════════════════════════════════════════════ */
+#col-l{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* DRO */
+.dro-ax{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+.dro-name{width:14px;font-size:11px;font-weight:700}
+.dro-val{flex:1;font-size:21px;font-weight:700;text-align:right;letter-spacing:-.03em;font-family:var(--mono)}
+.dro-unit{font-size:9px;color:var(--muted);width:18px}
+/* Pin LED */
+.pins{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
+.pin{display:flex;flex-direction:column;align-items:center;gap:2px;padding:5px 2px;
+  background:var(--s2);border:1px solid var(--s3);border-radius:4px}
+.led{width:9px;height:9px;border-radius:50%;background:var(--s3);transition:background .1s,box-shadow .1s}
+.led.on{background:var(--rl);box-shadow:0 0 5px var(--rl)}
+.led.on.prb{background:var(--cl);box-shadow:0 0 5px var(--cl)}
+.pname{font-size:9px;color:var(--muted)}
+/* Override */
+.ov-row{display:flex;align-items:center;gap:5px;margin-bottom:5px}
+.ov-lbl{width:52px;font-size:10px;color:var(--muted)}
+.ov-sl{flex:1;accent-color:var(--bl);height:3px}
+.ov-pct{width:34px;font-size:11px;text-align:right}
+.ov-b{padding:1px 4px;font-size:10px;cursor:pointer;background:var(--s3);
+  border:1px solid var(--s3);border-radius:3px;color:var(--text)}
+.ov-b:hover{background:var(--blue)}
+/* Console */
+#con{flex:1;overflow-y:auto;font-size:10px;line-height:1.55;padding:4px;min-height:0}
+.ll{display:flex;gap:5px}
+.ts{color:var(--muted);flex-shrink:0}
+.ok{color:var(--gl)}.er{color:var(--rl)}.tx{color:var(--bl)}
+.rx{color:var(--text)}.wn{color:var(--ol)}
+/* ══ Colonna centrale ══════════════════════════════════════════════════════ */
+#col-c{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* Viewer */
+#vpnl{flex:1;min-height:0}
+#vwrap{flex:1;overflow:hidden;position:relative;min-height:0;display:flex}
+#cv{width:100%;height:100%;cursor:crosshair;display:block}
+.vtb{display:flex;gap:3px;padding:5px 7px;border-bottom:1px solid var(--s3);
+  flex-wrap:wrap;align-items:center;flex-shrink:0}
+.vb{padding:3px 7px;font-size:10px;cursor:pointer;background:var(--s2);
+  border:1px solid var(--s3);border-radius:3px;color:var(--text);font-family:var(--mono)}
+.vb.ac{background:var(--blue);border-color:var(--bl);color:#fff}
+.vb:hover:not(.ac){background:var(--s3)}
+/* G-code / tabs centrali */
+#cpnl{flex:0 0 230px}
+.tabs{display:flex;border-bottom:1px solid var(--s3);padding:0 6px;flex-shrink:0}
+.tab{padding:5px 10px;font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.08em;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;
+  margin-bottom:-1px}
+.tab.ac{color:var(--bl);border-color:var(--bl)}
+.tp{display:none;overflow-y:auto;flex:1;padding:8px;min-height:0}
+.tp.ac{display:flex;flex-direction:column;gap:6px}
+/* Drop zone */
+#drop{border:2px dashed var(--s3);border-radius:4px;padding:10px;text-align:center;
+  cursor:pointer;font-size:11px;color:var(--muted);transition:border-color .2s}
+#drop.ov{border-color:var(--bl);color:var(--bl)}
+.prog{background:var(--s2);border-radius:3px;height:5px;overflow:hidden}
+.pb{height:100%;background:linear-gradient(90deg,var(--blue),var(--bl));transition:width .3s;width:0%}
+.si{display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}
+/* G-code textarea */
+#gta{width:100%;height:80px;background:var(--s2);border:1px solid var(--s3);
+  border-radius:4px;color:var(--text);font-family:var(--mono);font-size:10px;
+  padding:5px;resize:none;outline:none}
+#gta:focus{border-color:var(--bl)}
+/* MDI */
+#mdi{width:100%;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  color:var(--text);padding:6px 8px;font-family:var(--mono);font-size:12px;outline:none}
+#mdi:focus{border-color:var(--bl)}
+/* Settings */
+.stbl{width:100%;border-collapse:collapse;font-size:11px}
+.stbl th,.stbl td{padding:3px 5px;border-bottom:1px solid var(--s3);text-align:left}
+.stbl th{color:var(--muted);font-weight:400;font-size:9px}
+.sval{background:var(--s2);border:1px solid var(--s3);border-radius:3px;
+  color:var(--text);font-family:var(--mono);font-size:11px;padding:2px 4px;width:70px}
+/* ══ Colonna destra ════════════════════════════════════════════════════════ */
+#col-r{display:flex;flex-direction:column;gap:4px;overflow:hidden;min-height:0}
+/* Jog pad */
+.jpad{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);
+  gap:3px;aspect-ratio:1}
+.jb{display:flex;align-items:center;justify-content:center;font-size:14px;
+  cursor:pointer;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  user-select:none;transition:background .1s}
+.jb:hover{background:var(--blue)}.jb:active{background:var(--bl);color:#000}
+.jb.ctr{font-size:9px;color:var(--muted);cursor:default;background:transparent;border:none}
+.jz{display:flex;flex-direction:column;gap:3px}
+.jzb{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;
+  cursor:pointer;background:var(--s2);border:1px solid var(--s3);border-radius:4px;
+  user-select:none}
+.jzb:hover{background:var(--blue)}
+/* Step */
+.steps{display:flex;gap:2px;flex-wrap:wrap}
+.sb{flex:1;min-width:30px;padding:3px 2px;text-align:center;font-size:10px;cursor:pointer;
+  background:var(--s2);border:1px solid var(--s3);border-radius:3px;font-family:var(--mono)}
+.sb.ac{background:var(--blue);border-color:var(--bl)}
+/* Buttons */
+.btn{padding:5px 9px;font-size:11px;font-family:var(--mono);cursor:pointer;
+  border-radius:4px;border:1px solid;text-align:center;user-select:none}
+.btn:hover{filter:brightness(1.15)}.btn:active{filter:brightness(.9)}
+.p{background:var(--blue);border-color:var(--bl);color:#fff}
+.g{background:var(--green);border-color:var(--gl);color:#fff}
+.d{background:var(--red);border-color:var(--rl);color:#fff}
+.w{background:var(--orange);border-color:var(--ol);color:#fff}
+.gh{background:var(--s2);border-color:var(--s3);color:var(--text)}
+.sm{padding:3px 7px;font-size:10px}
+.fw{width:100%}
+/* Macros grid */
+.mgr{display:grid;grid-template-columns:1fr 1fr;gap:3px}
+/* Numpad input */
+.ni{background:var(--s2);border:1px solid var(--s3);border-radius:3px;color:var(--text);
+  padding:3px 5px;font-family:var(--mono);font-size:11px;width:100%;outline:none}
+.ni:focus{border-color:var(--bl)}
+/* Opzioni viewer */
+#vo-pnl{display:none;position:absolute;top:6px;right:6px;width:250px;background:var(--s2);
+  border:1px solid var(--s3);border-radius:6px;padding:10px;font-size:10px;z-index:5}
+#vo-pnl.show{display:block}
+#vo-pnl label{display:block;color:var(--muted);margin:4px 0 2px}
+#vo-pnl label.ck{display:flex;gap:6px;align-items:center;color:var(--text);margin:6px 0 0}
+#vo-pnl select{width:100%;background:var(--s1,#0d1117);color:var(--text);border:1px solid var(--s3);
+  border-radius:3px;padding:3px;font-size:11px}
+#vo-hint{color:var(--cl);margin-top:6px;line-height:1.4}
+#vo-hint2{color:var(--muted);margin-top:8px;line-height:1.4}
+/* WS dot */
+#ws-dot{width:8px;height:8px;border-radius:50%;background:var(--rl)}
+/* State badge */
+#sb{padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--s3);
+  color:var(--muted);background:transparent}
+/* Badge debug ESP (RAM) */
+#espb{padding:2px 8px;border-radius:20px;font-size:10px;border:1px solid var(--s3);
+  color:var(--muted);white-space:nowrap;cursor:default}
+/* Input non valido */
+.ni.bad{border-color:var(--rl)}
+/* Toast */
+#toast{position:fixed;bottom:14px;right:14px;background:var(--s2);
+  border:1px solid var(--s3);border-radius:5px;padding:8px 14px;font-size:11px;
+  z-index:999;opacity:0;transition:opacity .25s;pointer-events:none}
+#toast.on{opacity:1}
+/* Scroll */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px}
+/* Mobile */
+@media(max-width:900px){
+  #grid{grid-template-columns:1fr;overflow-y:auto}
+  .col-div{display:none}
+  html,body{overflow:auto;height:auto}
+  #app{height:auto;overflow:auto}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<div id="hdr">
+  <span>⚙</span>
+  <h1>CNC Remote</h1>
+  <span style="color:var(--muted);font-size:10px">GRBL v1.1</span>
+  <span id="sb">—</span>
+  <span id="espb" title="Debug ESP8266: in attesa dei dati">ESP —</span>
+  <div style="display:flex;align-items:center;gap:6px;font-size:10px;margin-left:auto">
+    <button id="estop" onclick="emergencyStop()" title="Feed Hold — arresta il movimento in sicurezza">🛑 E-STOP</button>
+    <div id="ws-dot"></div>
+    <span id="ws-lbl">Disconnesso</span>
+  </div>
+</div>
+
+<!-- ══ GRID ═════════════════════════════════════════════════════════════════ -->
+<div id="grid">
+
+<!-- ═══ COL SINISTRA ════════════════════════════════════════════════════════ -->
+<div id="col-l">
+
+  <!-- DRO -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">📍 Posizione</div>
+    <div class="pnl-b" style="padding:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <span style="font-size:9px;color:var(--muted)">WORK (WPos)</span>
+        <div style="display:flex;gap:3px">
+          <button class="btn gh sm" onclick="setZero('XY')">0 XY</button>
+          <button class="btn gh sm" onclick="setZero('Z')">0 Z</button>
+          <button class="btn w sm" onclick="setZero('XYZ')">0 ALL</button>
+        </div>
+      </div>
+      <div class="dro-ax"><span class="dro-name" style="color:#ff7675">X</span>
+        <span class="dro-val" id="wx">0.000</span><span class="dro-unit">mm</span></div>
+      <div class="dro-ax"><span class="dro-name" style="color:#74b9ff">Y</span>
+        <span class="dro-val" id="wy">0.000</span><span class="dro-unit">mm</span></div>
+      <div class="dro-ax"><span class="dro-name" style="color:#55efc4">Z</span>
+        <span class="dro-val" id="wz">0.000</span><span class="dro-unit">mm</span></div>
+      <div style="border-top:1px solid var(--s3);margin:7px 0 5px"></div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">MACHINE (MPos)</div>
+      <div style="display:flex;gap:10px;font-size:11px">
+        X<span id="mx" style="color:var(--text)">0.000</span>
+        Y<span id="my" style="color:var(--text)">0.000</span>
+        Z<span id="mz" style="color:var(--text)">0.000</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feed / Spindle + Override -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">⚡ Feed &amp; Spindle</div>
+    <div class="pnl-b" style="padding:9px">
+      <div style="display:flex;gap:10px;margin-bottom:7px">
+        <div>Feed: <strong id="cf">0</strong> <span style="color:var(--muted)">mm/min</span></div>
+        <div>Spindle: <strong id="cs">0</strong> <span style="color:var(--muted)">RPM</span></div>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Feed %</span>
+        <input type="range" class="ov-sl" id="of-sl" min="10" max="200" value="100"
+          oninput="odsp('f')" onchange="sendOv('f',this.value)">
+        <span class="ov-pct" id="of-p">100%</span>
+        <button class="ov-b" onclick="iov('f',-10)">−</button>
+        <button class="ov-b" onclick="rov('f')">↺</button>
+        <button class="ov-b" onclick="iov('f',10)">+</button>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Rapid %</span>
+        <input type="range" class="ov-sl" id="or-sl" min="25" max="100" step="25" value="100"
+          oninput="odsp('r')" onchange="sendOv('r',this.value)">
+        <span class="ov-pct" id="or-p">100%</span>
+        <button class="ov-b" onclick="iov('r',-25)">−</button>
+        <button class="ov-b" onclick="rov('r')">↺</button>
+        <button class="ov-b" onclick="iov('r',25)">+</button>
+      </div>
+      <div class="ov-row">
+        <span class="ov-lbl">Spindle %</span>
+        <input type="range" class="ov-sl" id="os-sl" min="10" max="200" value="100"
+          oninput="odsp('s')" onchange="sendOv('s',this.value)">
+        <span class="ov-pct" id="os-p">100%</span>
+        <button class="ov-b" onclick="iov('s',-10)">−</button>
+        <button class="ov-b" onclick="rov('s')">↺</button>
+        <button class="ov-b" onclick="iov('s',10)">+</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pin / Ingressi -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🔌 Ingressi</div>
+    <div class="pnl-b" style="padding:7px">
+      <div class="pins">
+        <div class="pin"><div class="led" id="plx"></div><span class="pname">Lim X</span></div>
+        <div class="pin"><div class="led" id="ply"></div><span class="pname">Lim Y</span></div>
+        <div class="pin"><div class="led" id="plz"></div><span class="pname">Lim Z</span></div>
+        <div class="pin"><div class="led prb" id="pprb"></div><span class="pname">Probe</span></div>
+        <div class="pin"><div class="led" id="pdoor"></div><span class="pname">Door</span></div>
+        <div class="pin"><div class="led" id="phold"></div><span class="pname">Hold</span></div>
+        <div class="pin"><div class="led" id="pcs"></div><span class="pname">Start</span></div>
+        <div class="pin"><div class="led" id="psp"></div><span class="pname">Spindle</span></div>
+      </div>
+      <div style="display:flex;gap:5px;margin-top:6px;font-size:10px">
+        <div id="afl" style="padding:2px 7px;border-radius:3px;border:1px solid var(--s3);color:var(--muted)">Flood OFF</div>
+        <div id="ami" style="padding:2px 7px;border-radius:3px;border:1px solid var(--s3);color:var(--muted)">Mist OFF</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Console -->
+  <div class="pnl" style="flex:1;min-height:80px">
+    <div class="pnl-t" style="justify-content:space-between">
+      📟 Console
+      <button class="btn gh sm" onclick="clrCon()">Clear</button>
+    </div>
+    <div id="con"></div>
+  </div>
+
+</div><!-- /col-l -->
+<div class="col-div" id="cdiv1"></div>
+
+<!-- ═══ COL CENTRALE ════════════════════════════════════════════════════════ -->
+<div id="col-c">
+
+  <!-- Viewer 3D -->
+  <div class="pnl" id="vpnl">
+    <div class="vtb">
+      <span style="font-size:9px;color:var(--muted)">Vista:</span>
+      <button class="vb ac" id="vt" onclick="setView('top')">XY</button>
+      <button class="vb" id="vf" onclick="setView('front')">XZ</button>
+      <button class="vb" id="vs" onclick="setView('side')">YZ</button>
+      <button class="vb" id="vi" onclick="setView('iso')">ISO</button>
+      <div style="flex:1"></div>
+      <button class="vb" onclick="viewer.fit()">⊡ Fit</button>
+      <button class="vb" onclick="viewer.reset()">↺</button>
+      <button class="vb" id="vo-btn" title="Opzioni mouse 3D" onclick="g('vo-pnl').classList.toggle('show')">Mouse</button>
+      <span id="cpos" style="font-size:9px;color:var(--muted);margin-left:6px">—</span>
+    </div>
+    <div id="vwrap"><canvas id="cv"></canvas>
+      <div id="vo-pnl">
+        <div style="font-weight:700;margin-bottom:6px">Controlli mouse 3D</div>
+        <label>Schema</label>
+        <select id="vo-preset"></select>
+        <div id="vo-hint"></div>
+        <label class="ck"><input type="checkbox" id="vo-zc"> Zoom verso il cursore</label>
+        <label class="ck"><input type="checkbox" id="vo-iz"> Inverti rotella</label>
+        <div id="vo-hint2">Doppio clic = adatta alla vista · Touch: 1 dito orbita, 2 dita pan/zoom</div>
+      </div></div>
+  </div>
+
+  <!-- G-code / MDI / Settings -->
+  <div class="pnl" id="cpnl">
+    <div class="tabs">
+      <div class="tab ac" data-pane="tgc">G-code</div>
+      <div class="tab" data-pane="tmdi">MDI</div>
+      <div class="tab" data-pane="tset">Impostazioni</div>
+      <div class="tab" data-pane="tedt">Editor</div>
+    </div>
+    <!-- G-code -->
+    <div class="tp ac" id="tgc">
+      <div id="drop" onclick="document.getElementById('fi').click()"
+        ondragover="event.preventDefault();this.classList.add('ov')"
+        ondragleave="this.classList.remove('ov')"
+        ondrop="dropGc(event)">
+        <input type="file" id="fi" accept=".nc,.gcode,.gc,.cnc,.txt,.ngc"
+          style="display:none" onchange="loadFile(this.files[0])">
+        📂 Trascina file G-code qui, o clicca
+      </div>
+      <div class="si"><span id="si">Nessun file</span><span id="spc">0%</span></div>
+      <div class="prog"><div class="pb" id="pb"></div></div>
+      <div style="display:flex;gap:3px;flex-wrap:wrap">
+        <button class="btn g sm" id="bpl" onclick="stStart()" disabled>▶ Start</button>
+        <button class="btn p sm" id="bac" onclick="airCut()" disabled title="Ricarica il file G-code per abilitare l'air cut">⬚ Air cut ingombro</button>
+        <button class="btn w sm" id="bpa" onclick="stPause()" disabled>⏸ Pausa</button>
+        <button class="btn d sm" onclick="stStop()">⏹ Stop</button>
+        <button class="btn gh sm" onclick="clrGc()">🗑 Svuota</button>
+      </div>
+      <div style="display:flex;gap:5px;align-items:center;font-size:9px;color:var(--muted)"
+        title="Parametri dell'air cut: perimetro XY del file a quota di sicurezza, mandrino spento">
+        Air cut: Z sicurezza
+        <input type="text" inputmode="decimal" id="acz" class="ni" style="width:52px" value="5">mm
+        &nbsp;F
+        <input type="text" inputmode="decimal" id="acf" class="ni" style="width:58px" value="1000">mm/min
+      </div>
+      <div id="jobst" style="display:none;margin-top:4px;padding:4px 6px;border:1px solid var(--s3);border-radius:4px;font-size:11px;line-height:1.4">
+        <span id="jobtx"></span>
+        <button class="btn gh sm" style="margin-left:6px" onclick="forceClear()" title="Azzera lo stato del job sul bridge senza inviare nulla a GRBL">🔓 Sblocca stato</button>
+      </div>
+    </div>
+    <!-- MDI -->
+    <div class="tp" id="tmdi">
+      <div style="font-size:10px;color:var(--muted)">Comando singolo GRBL:</div>
+      <div style="display:flex;gap:4px">
+        <input type="text" id="mdi" placeholder="G0 X10, $H, $X …">
+        <button class="btn p sm" onclick="sendMDI()">↵</button>
+      </div>
+      <div style="font-size:9px;color:var(--muted)">Rapidi:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px">
+        <button class="btn gh sm" onclick="rt(0x3F)">?</button>
+        <button class="btn gh sm" onclick="sc('$$')">$$</button>
+        <button class="btn gh sm" onclick="sc('$#')">$#</button>
+        <button class="btn gh sm" onclick="sc('$G')">$G</button>
+        <button class="btn gh sm" onclick="sc('$I')">$I</button>
+        <button class="btn gh sm" onclick="sc('G10 L20 P1 X0 Y0 Z0')">Zero WCS</button>
+        <button class="btn gh sm" onclick="sc('G28.1')">Set G28</button>
+        <button class="btn gh sm" onclick="sc('G28')">Go G28</button>
+        <button class="btn gh sm" onclick="sc('G30')">Go G30</button>
+        <button class="btn gh sm" onclick="sc('M3 S1000')">M3 S1000</button>
+        <button class="btn gh sm" onclick="sc('M5')">M5</button>
+        <button class="btn gh sm" onclick="sc('M8')">M8 Flood</button>
+        <button class="btn gh sm" onclick="sc('M9')">M9 Stop</button>
+      </div>
+    </div>
+    <!-- Impostazioni $$ -->
+    <div class="tp" id="tset">
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="btn p sm" onclick="loadSet()">↻ Carica $$</button>
+        <input type="text" placeholder="Cerca…" style="flex:1;background:var(--s2);
+          border:1px solid var(--s3);border-radius:3px;color:var(--text);padding:3px 6px;
+          font-family:var(--mono);font-size:10px;outline:none" oninput="filterSet(this.value)">
+      </div>
+      <table class="stbl" style="width:100%">
+        <thead><tr><th>$</th><th>Descrizione</th><th>Valore</th><th></th></tr></thead>
+        <tbody id="stb"></tbody>
+      </table>
+    </div>
+    <!-- Editor G-code -->
+    <div class="tp" id="tedt">
+      <div style="font-size:9px;color:var(--muted)">Incolla G-code, poi carica nel controller:</div>
+      <textarea id="gta" rows="8" placeholder="G21 G90&#10;G0 Z5&#10;G0 X0 Y0&#10;..."></textarea>
+      <div style="display:flex;gap:4px">
+        <button class="btn p sm" onclick="sendGcodeText()">📤 Carica nel controller</button>
+        <button class="btn gh sm" onclick="document.getElementById('gta').value=''">🗑</button>
+        <button class="btn g sm" onclick="vizGcodeText()">👁 Visualizza</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col-c -->
+<div class="col-div" id="cdiv2"></div>
+
+<!-- ═══ COL DESTRA ══════════════════════════════════════════════════════════ -->
+<div id="col-r">
+
+  <!-- Jog -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🕹 Jog</div>
+    <div class="pnl-b" style="padding:8px">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Step (mm):</div>
+      <div class="steps" id="stps" style="margin-bottom:6px">
+        <button class="sb" onclick="ss(.01)">.01</button>
+        <button class="sb" onclick="ss(.1)">.1</button>
+        <button class="sb ac" onclick="ss(1)">1</button>
+        <button class="sb" onclick="ss(5)">5</button>
+        <button class="sb" onclick="ss(10)">10</button>
+        <button class="sb" onclick="ss(50)">50</button>
+        <input type="text" inputmode="decimal" id="stc" class="ni" style="width:52px;flex:0 0 52px"
+          value="1" title="Step personalizzato (0.001–500 mm, virgola o punto): Invio per applicare">
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">
+        <span style="font-size:9px;color:var(--muted)">Jog F:</span>
+        <input type="number" id="jf" value="1000" min="1" max="8000" class="ni" style="width:70px">
+        <span style="font-size:9px;color:var(--muted)">mm/min</span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <div style="flex:1">
+          <div class="jpad">
+            <div class="jb" onclick="jog('X-1 Y1')">↖</div>
+            <div class="jb" onclick="jog('Y1')">↑</div>
+            <div class="jb" onclick="jog('X1 Y1')">↗</div>
+            <div class="jb" onclick="jog('X-1')">←</div>
+            <div class="jb ctr">XY</div>
+            <div class="jb" onclick="jog('X1')">→</div>
+            <div class="jb" onclick="jog('X-1 Y-1')">↙</div>
+            <div class="jb" onclick="jog('Y-1')">↓</div>
+            <div class="jb" onclick="jog('X1 Y-1')">↘</div>
+          </div>
+        </div>
+        <div class="jz" style="width:44px">
+          <span style="text-align:center;font-size:9px;color:var(--muted)">Z</span>
+          <div class="jzb gh" onclick="jog('Z1')" style="border:1px solid var(--s3)">▲<br><span style="font-size:8px">+Z</span></div>
+          <div class="jzb gh" onclick="jog('Z-1')" style="border:1px solid var(--s3)">▼<br><span style="font-size:8px">-Z</span></div>
+        </div>
+      </div>
+      <button class="btn d fw sm" style="margin-top:5px" onclick="jogStop()">⏹ Stop Jog (ESC)</button>
+    </div>
+  </div>
+
+  <!-- Comandi rapidi / Macro -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">🔧 Comandi</div>
+    <div class="pnl-b" style="padding:7px">
+      <div class="mgr">
+        <button class="btn w" onclick="rt(0x18)">🔄 Reset</button>
+        <button class="btn p" onclick="sc('$X')">🔓 Unlock</button>
+        <button class="btn p" onclick="sc('$H')">🏠 Home All</button>
+        <button class="btn gh" onclick="sc('$HZ')">Home Z</button>
+        <button class="btn gh" onclick="rt(0x7E)">▶ Start~</button>
+        <button class="btn gh" onclick="rt(0x21)">⏸ Hold!</button>
+        <button class="btn gh" onclick="rt(0x9E)">🌀 Spindle</button>
+        <button class="btn gh" onclick="rt(0xA0)">💧 Flood</button>
+        <button class="btn gh" onclick="probeZ()">🔩 Probe Z</button>
+        <button class="btn gh" onclick="sc('G28')">↩ G28</button>
+      </div>
+      <!-- Probe config -->
+      <div style="border-top:1px solid var(--s3);margin-top:7px;padding-top:7px">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:4px">Probe Z:</div>
+        <div style="display:flex;gap:4px">
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Profondità</div>
+            <input type="number" id="pd" value="-20" class="ni"></div>
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Feed</div>
+            <input type="number" id="pf" value="50" class="ni"></div>
+          <div style="flex:1"><div style="font-size:8px;color:var(--muted)">Spessore</div>
+            <input type="number" id="pt" value="2" step="0.1" class="ni"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WCS / Zero -->
+  <div class="pnl" style="flex:0 0 auto">
+    <div class="pnl-t">📐 WCS / Zero</div>
+    <div class="pnl-b" style="padding:7px">
+      <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:6px">
+        <button class="btn gh sm" onclick="sc('G54')">G54</button>
+        <button class="btn gh sm" onclick="sc('G55')">G55</button>
+        <button class="btn gh sm" onclick="sc('G56')">G56</button>
+        <button class="btn gh sm" onclick="sc('G57')">G57</button>
+        <button class="btn gh sm" onclick="sc('G58')">G58</button>
+        <button class="btn gh sm" onclick="sc('G59')">G59</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:3px">
+        <button class="btn w sm" onclick="setZero('X')">Zero X</button>
+        <button class="btn w sm" onclick="setZero('Y')">Zero Y</button>
+        <button class="btn w sm" onclick="setZero('Z')">Zero Z</button>
+      </div>
+      <button class="btn w fw sm" onclick="setZero('XYZ')">Zero X+Y+Z</button>
+      <!-- Go to -->
+      <div style="border-top:1px solid var(--s3);margin-top:7px;padding-top:6px">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Vai a posizione WCS:</div>
+        <div style="display:flex;gap:3px;margin-bottom:3px">
+          <input type="number" id="gtx" placeholder="X" value="0" class="ni" style="flex:1">
+          <input type="number" id="gty" placeholder="Y" value="0" class="ni" style="flex:1">
+          <input type="number" id="gtz" placeholder="Z" value="0" class="ni" style="flex:1">
+        </div>
+        <div style="display:flex;gap:3px">
+          <button class="btn p sm" style="flex:1" onclick="goXY()">→ XY</button>
+          <button class="btn p sm" style="flex:1" onclick="goZ()">→ Z</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /col-r -->
+</div><!-- /grid -->
+</div><!-- /app -->
+
+<div id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+//  Costanti & Config
+// ═══════════════════════════════════════════════════════════════════════════
+const WS_URL = 'ws://' + location.hostname + ':81/';
+
+// GRBL override real-time codes
+const OV = {
+  FEED_RESET:0x90, FEED_P10:0x91, FEED_M10:0x92, FEED_P1:0x93, FEED_M1:0x94,
+  RAPID_100:0x95, RAPID_50:0x96, RAPID_25:0x97,
+  SP_RESET:0x99, SP_P10:0x9A, SP_M10:0x9B, SP_P1:0x9C, SP_M1:0x9D,
+  SP_TOGGLE:0x9E, FLOOD_TOGGLE:0xA0, MIST_TOGGLE:0xA1
+};
+
+// GRBL setting descriptions
+const SDESC = {
+  0:'Step pulse µs',1:'Step idle delay ms',2:'Step port invert',3:'Dir port invert',
+  4:'Step enable invert',5:'Limit pins invert',6:'Probe pin invert',
+  10:'Status report mask',11:'Junction deviation mm',12:'Arc tolerance mm',
+  13:'Report in inches',20:'Soft limits',21:'Hard limits',22:'Homing cycle',
+  23:'Homing dir invert',24:'Homing feed mm/min',25:'Homing seek mm/min',
+  26:'Homing debounce ms',27:'Homing pull-off mm',28:'Max spindle RPM',
+  29:'Min spindle RPM',30:'Laser mode',100:'X step/mm',101:'Y step/mm',
+  102:'Z step/mm',110:'X max rate mm/min',111:'Y max rate mm/min',
+  112:'Z max rate mm/min',120:'X accel mm/s²',121:'Y accel mm/s²',
+  122:'Z accel mm/s²',130:'X max travel mm',131:'Y max travel mm',
+  132:'Z max travel mm'
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Stato applicazione
+// ═══════════════════════════════════════════════════════════════════════════
+let ws, state = {
+  connected:false, grblState:'—',
+  mpos:[0,0,0], wpos:[0,0,0], wco:[0,0,0],
+  feed:0, spindle:0, ov:[100,100,100],
+  pins:{}, acc:{}, stream:{running:false,paused:false,sent:0,acked:0,total:0}
+};
+let jogStep = 1;
+let gcLines = [];
+let gcText = '';          // testo del G-code caricato da questa pagina (per l'air cut)
+let spOn = false, flOn = false;
+let settings = {};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WebSocket
+// ═══════════════════════════════════════════════════════════════════════════
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    state.connected = true;
+    updConn(true);
+    clog('Connesso al bridge WiFi', 'ok');
+  };
+  ws.onclose = () => {
+    state.connected = false;
+    updConn(false);
+    clog('Disconnesso — riconnessione…', 'wn');
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => clog('Errore WebSocket', 'er');
+  ws.onmessage = e => onMsg(JSON.parse(e.data));
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+function sc(cmd) {
+  send({type:'cmd', cmd});
+  clog('→ ' + cmd, 'tx');
+}
+
+function emergencyStop(){
+  send({type:'estop'});
+  clog('⚠ E-STOP: feed hold + reset, job annullato','er');
+  toast('E-STOP attivato. Se compare ALARM premi Unlock ($X)');
+}
+
+function rt(code) {
+  // Real-time (1 byte): inviato come {type:'rt'} → il firmware usa sendRaw()
+  // senza '\n' (necessario per ~ ! ? e per i byte 0x80+ degli override)
+  send({type:'rt', code});
+  clog('→ RT 0x' + code.toString(16).toUpperCase(), 'tx');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Message handler
+// ═══════════════════════════════════════════════════════════════════════════
+function onMsg(m) {
+  switch(m.type) {
+    case 'status':       updStatus(m); break;
+    case 'ok':           clog('← ok','ok'); break;
+    case 'error':        clog('← error:'+m.code+(m.lineNo?' (riga G-code '+m.lineNo+(m.text?': '+m.text:'')+')':'')+' — '+errTxt(m.code),'er');
+                         toast('Errore '+m.code+': '+errTxt(m.code),'er'); break;
+    case 'alarm':        clog('⚠ ALARM:'+m.code+' — '+almTxt(m.code),'er'); toast('ALARM '+m.code+': '+almTxt(m.code)); break;
+    case 'raw':          clog('← '+m.line,'rx'); break;
+    case 'info':         clog('← '+m.line,'rx'); break;
+    case 'welcome':      clog('← '+m.version,'ok'); break;
+    case 'setting':      parseSetting(m.raw); clog('← '+m.raw,'rx'); break;
+    case 'file_ready':
+      stDone = false; g('pb').style.width = '0%'; g('spc').textContent = '0%';
+      g('si').textContent = m.lines + ' linee caricate';
+      g('bpl').disabled = false;
+      g('bpa').disabled = true;
+      updAirBtn();
+      clog('File pronto: '+m.lines+' linee','ok');
+      break;
+    case 'stream_progress':
+      syncStreamUi({running:m.running, paused:m.paused, sent:m.sent, acked:m.acked,
+                    total:m.total, lastError:m.lastError||0, errLine:m.errLine||0, errText:m.errText||''});
+      break;
+    case 'stream_done':
+      if (m.aircut) { clog('✅ Air cut ingombro completato','ok'); toast('Air cut completato!'); break; }
+      stDone = true;
+      updProg(m.total, m.total, m.total);
+      g('bpl').disabled = false;
+      clog('✅ Job completato ('+m.total+' linee)','ok');
+      toast('Job completato!');
+      g('bpa').disabled = true;
+      break;
+    case 'stream_stopped':
+      clog(m.aircut ? '⏹ Air cut interrotto' : '⏹ Streaming interrotto','wn');
+      syncStreamUi({running:false, paused:false, sent:0, acked:0,
+                    total:(state.stream||{}).total||0, lastError:0, errLine:0});
+      break;
+    case 'error_msg':
+      clog('⚠ '+m.msg,'er');
+      toast(m.msg + (m.msg.indexOf('Job in corso')>=0 ? ' — premi Stop o Sblocca stato' : '')); break;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Status update
+// ═══════════════════════════════════════════════════════════════════════════
+function updStatus(s) {
+  state.grblState = s.state;
+  state.mpos = s.mpos; state.wpos = s.wpos; state.wco = s.wco;
+  state.feed = s.feed; state.spindle = s.spindle;
+  state.ov = s.ov; state.pins = s.pins; state.acc = s.acc;
+  if (s.stream) {
+    if (!firstStatusSeen && s.stream.running)
+      clog('Job attivo sul bridge: '+s.stream.acked+'/'+s.stream.total+' righe'+
+           (s.stream.paused?' (in pausa)':''), 'wn');
+    syncStreamUi(s.stream);
+  }
+  firstStatusSeen = true;
+  if (s.state === 'Disconnected' && state.connected) {
+    const now = Date.now();
+    if (now - lastNoRxLog > 10000) {
+      lastNoRxLog = now;
+      const sec = s.rx_age != null && s.rx_age < 3.6e6 ? Math.round(s.rx_age/1000)+' s' : 'l\'avvio';
+      clog('Arduino non risponde da '+sec+': controlla cavo RX (Uno pin 1 → D7), alimentazione Uno, 115200 baud', 'wn');
+    }
+  }
+  spOn = s.acc.spindle; flOn = s.acc.flood;
+  if (s.esp) updEsp(s.esp);
+  renderStatus();
+}
+
+// Allinea bottoni, progresso e riga di stato del job allo stato del bridge
+// (usato per stream_progress e per ogni status → corretto anche dopo il reload)
+let firstStatusSeen = false, lastNoRxLog = 0, stDone = false;
+function syncStreamUi(st) {
+  state.stream = st;
+  const run = !!st.running, pau = !!st.paused;
+  g('bpl').disabled = run || !(st.total > 0);
+  g('bpa').disabled = !run;
+  g('bpa').textContent = run && pau ? '▶ Riprendi' : '⏸ Pausa';
+  updAirBtn();
+  if (run) { stDone = false; updProg(st.sent, st.acked, st.total); }
+  else if (!stDone) {
+    g('pb').style.width = '0%'; g('spc').textContent = '0%';
+    if (st.total > 0) g('si').textContent = st.total + ' linee caricate';
+  }
+  const box = g('jobst'), tx = g('jobtx');
+  if (!run) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  const ac = st.aircut ? '⬚ <b>Air cut ingombro</b> — ' : '';
+  if (pau && st.lastError) {
+    const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    tx.innerHTML = ac + '⏸ <b>In pausa per errore error:'+st.lastError+'</b> (riga G-code '+st.errLine+
+      (st.errText ? ': <code>'+esc(st.errText)+'</code>' : '')+') — '+
+      errTxt(st.lastError)+'. Correggi e premi Riprendi o Stop.'+
+      '<br><small>Il numero conta solo le righe di G-code (commenti esclusi).</small>';
+    box.style.borderColor = 'var(--er, #f85149)';
+  } else if (pau) {
+    tx.innerHTML = ac + '⏸ In pausa — premi Riprendi o Stop';
+    box.style.borderColor = '#d29922';
+  } else {
+    tx.innerHTML = st.aircut ? '⬚ <b>Air cut ingombro in corso</b> ('+st.acked+'/'+st.total+') — mandrino spento'
+                             : '▶ Job in corso ('+st.acked+'/'+st.total+')';
+    box.style.borderColor = '#58a6ff';
+  }
+}
+function forceClear() {
+  if (!confirm('Azzerare lo stato del job sul bridge? Non invia nulla a GRBL: se la macchina si sta muovendo usa E-STOP.')) return;
+  send({type:'stream_force_clear'});
+}
+
+// Badge debug ESP: solo RAM (heap libero e blocco massimo), colore per soglia
+function updEsp(e) {
+  const b = g('espb'), kb = Math.round((e.heap||0)/1024), mx = Math.round((e.maxblk||0)/1024);
+  const lvl = kb < 10 ? 2 : kb < 20 ? 1 : 0;
+  b.textContent = lvl ? 'ESP ⚠ '+kb+' kB · max '+mx+' kB' : 'ESP RAM '+kb+' kB · max '+mx+' kB';
+  b.title = 'Debug ESP8266 (aggiornato ~1/s)\nHeap libero: '+e.heap+' byte\nBlocco libero max: '+
+    e.maxblk+' byte\nFrammentazione heap: '+e.frag+'%';
+  const col = ['#3fb950','#d29922','#f85149'][lvl];
+  b.style.color = col; b.style.borderColor = col+'66'; b.style.background = col+'22';
+}
+
+function renderStatus() {
+  const sc = {Idle:['#3fb950','#3fb95022'],Run:['#58a6ff','#58a6ff22'],
+    Hold:['#d29922','#d2992222'],Jog:['#17c0d0','#17c0d022'],
+    Alarm:['#f85149','#f8514922'],Door:['#d29922','#d2992222'],
+    Home:['#58a6ff','#58a6ff22'],Sleep:['#6e7681','#6e768122'],
+    Check:['#8b949e','#8b949e22'],Disconnected:['#6e7681','transparent']};
+  const [col,bg] = sc[state.grblState] || sc.Disconnected;
+  const sb = g('sb');
+  sb.textContent = state.grblState;
+  sb.style.color = col; sb.style.background = bg; sb.style.borderColor = col+'66';
+
+  g('wx').textContent = fmt(state.wpos[0]);
+  g('wy').textContent = fmt(state.wpos[1]);
+  g('wz').textContent = fmt(state.wpos[2]);
+  g('mx').textContent = fmt(state.mpos[0]);
+  g('my').textContent = fmt(state.mpos[1]);
+  g('mz').textContent = fmt(state.mpos[2]);
+
+  g('cf').textContent = Math.round(state.feed);
+  g('cs').textContent = Math.round(state.spindle);
+
+  if (state.ov && state.ov.length >= 3) {
+    g('of-sl').value = state.ov[0]; g('of-p').textContent = state.ov[0]+'%';
+    g('or-sl').value = state.ov[1]; g('or-p').textContent = state.ov[1]+'%';
+    g('os-sl').value = state.ov[2]; g('os-p').textContent = state.ov[2]+'%';
+  }
+
+  const P = state.pins || {};
+  led('plx', P.lx); led('ply', P.ly); led('plz', P.lz);
+  led('pprb', P.prb, true); led('pdoor', P.door);
+  led('phold', P.hold); led('pcs', P.cs); led('psp', (state.acc||{}).spindle);
+
+  const A = state.acc || {};
+  acEl('afl', A.flood, 'Flood ON', 'Flood OFF');
+  acEl('ami', A.mist, 'Mist ON', 'Mist OFF');
+
+  viewer.setTool(state.wpos[0], state.wpos[1], state.wpos[2]);
+}
+
+function led(id, on, isProbe=false) {
+  const el = g(id); if (!el) return;
+  el.classList.toggle('on', !!on);
+  if (isProbe) el.classList.toggle('prb', !!on);
+}
+function acEl(id, on, t, f) {
+  const el = g(id);
+  el.textContent = on ? t : f;
+  el.style.color = on ? 'var(--cl)' : 'var(--muted)';
+  el.style.borderColor = on ? 'var(--cl)' : 'var(--s3)';
+}
+function fmt(v) { return (parseFloat(v)||0).toFixed(3).padStart(8,' '); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Jog
+// ═══════════════════════════════════════════════════════════════════════════
+const STEPS = [.01,.1,1,5,10,50];
+function ss(v) {
+  jogStep = v;
+  g('stps').querySelectorAll('.sb').forEach(b =>
+    b.classList.toggle('ac', parseFloat(b.textContent) === v));
+  const ci = g('stc'); ci.value = String(v); ci.classList.remove('bad');
+}
+// Numero con virgola o punto decimale; NaN se non valido
+function pnum(v) {
+  const t = String(v).trim().replace(',', '.');
+  return /^[-+]?(\d+\.?\d*|\.\d+)$/.test(t) ? parseFloat(t) : NaN;
+}
+// Applica lo step personalizzato (0.001–500 mm): spegne i preset
+function applyStepInput() {
+  const ci = g('stc'), v = pnum(ci.value);
+  if (!(v >= 0.001 && v <= 500)) { ci.classList.add('bad'); return; }
+  ci.classList.remove('bad');
+  jogStep = Math.round(v*1000)/1000;
+  g('stps').querySelectorAll('.sb').forEach(b => b.classList.remove('ac'));
+}
+// '[' / ']': preset precedente/successivo rispetto allo step attuale
+function stepPreset(dir) {
+  const e = 1e-9;
+  const v = dir < 0 ? [...STEPS].reverse().find(p => p < jogStep - e)
+                    : STEPS.find(p => p > jogStep + e);
+  if (v !== undefined) ss(v);
+}
+
+function jog(axesStr) {
+  // axesStr es. "X1 Y-1" oppure "Z1"
+  const f = parseFloat(g('jf').value) || 1000;
+  let axes = '';
+  axesStr.split(' ').forEach(tok => {
+    const ax = tok[0];
+    const dir = parseFloat(tok.substring(1));
+    axes += ax + (dir * jogStep).toFixed(3) + ' ';
+  });
+  send({type:'jog', axes:axes.trim(), feed:f});
+}
+
+function jogStop() { send({type:'jog_cancel'}); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  G-code
+// ═══════════════════════════════════════════════════════════════════════════
+function loadFile(file) {
+  if (!file) return;
+  const rd = new FileReader();
+  rd.onload = e => {
+    const txt = e.target.result;
+    // Visualizza localmente
+    parseViz(txt);
+    // Carica sul controller
+    uploadGc(file.name, txt);
+  };
+  rd.readAsText(file);
+}
+
+function uploadGc(name, text) {
+  const blob = new Blob([text], {type:'text/plain'});
+  const fd = new FormData(); fd.append('file', blob, name);
+  clog('Caricamento "'+name+'"…', 'tx');
+  fetch('/api/upload', {method:'POST', body:fd})
+    .then(r => r.json())
+    .then(j => {
+      if (!j.ok) { clog('⚠ '+(j.msg||'Upload rifiutato'),'er'); toast(j.msg||'Upload rifiutato'); return; }
+      clog('File pronto: '+j.lines+' linee', 'ok');
+      g('si').textContent = j.lines+' linee — '+name;
+      g('bpl').disabled = false;
+      setGcText(text);
+    })
+    .catch(e => clog('Errore upload: '+e,'er'));
+}
+
+function dropGc(ev) {
+  ev.preventDefault();
+  g('drop').classList.remove('ov');
+  const f = ev.dataTransfer.files[0];
+  if (f) loadFile(f);
+}
+
+function sendGcodeText() {
+  const txt = g('gta').value.trim();
+  if (!txt) return;
+  parseViz(txt);
+  send({type:'gcode_text', text:txt});
+  setGcText(txt);
+  clog('G-code dall\'editor inviato al controller','tx');
+}
+
+function vizGcodeText() {
+  parseViz(g('gta').value);
+  toast('Visualizzazione aggiornata');
+}
+
+function stStart() {
+  send({type:'stream_start'});
+  clog('▶ Avvio streaming richiesto','ok');
+}
+function stPause() {
+  send({type:'stream_pause'});
+  clog('⏸ Pausa/Riprendi','wn');
+}
+function stStop() {
+  send({type:'stream_stop'});
+}
+function clrGc() {
+  gcLines = []; viewer.clearPath();
+  setGcText('');
+  g('si').textContent = 'Nessun file';
+  g('bpl').disabled = true;
+  updProg(0,0,0);
+}
+// ── Air cut ingombro ───────────────────────────────────────────────────────
+// Analizza il G-code: rettangolo XY dei movimenti di taglio (G1/G2/G3, archi
+// approssimati come nel viewer; se assenti, di tutti i movimenti), quota di
+// sicurezza dal commento "; Safe height: Nmm" o, in mancanza, Z massima.
+function gcAnalyze(text) {
+  const sh = /;\s*safe\s*height\s*:\s*([-+]?[0-9]*[.,]?[0-9]+)\s*mm/i.exec(text);
+  let cur = {x:0,y:0,z:0}, mode = 0, abs = true, zMax = -Infinity;
+  const bc = {x0:Infinity,x1:-Infinity,y0:Infinity,y1:-Infinity}, ba = {...bc};
+  const add = (b,x,y) => { b.x0=Math.min(b.x0,x); b.x1=Math.max(b.x1,x); b.y0=Math.min(b.y0,y); b.y1=Math.max(b.y1,y); };
+  for (const raw of text.split('\n')) {
+    let ln = raw.toUpperCase();
+    const ci = ln.indexOf(';'); if (ci >= 0) ln = ln.substring(0, ci);
+    ln = ln.replace(/\([^)]*\)?/g, '').trim();
+    if (!ln) continue;
+    const w = {}; const re = /([A-Z])\s*([-+]?[0-9]*\.?[0-9]+)/g; let m;
+    while ((m = re.exec(ln)) !== null) {
+      const v = parseFloat(m[2]);
+      if (m[1] === 'G') {
+        if (v === 90) abs = true; else if (v === 91) abs = false;
+        else if ([0,1,2,3].includes(v)) mode = v;
+      } else w[m[1]] = v;
+    }
+    if (!('X' in w || 'Y' in w || 'Z' in w)) continue;
+    const n = {x:'X' in w?(abs?w.X:cur.x+w.X):cur.x,
+               y:'Y' in w?(abs?w.Y:cur.y+w.Y):cur.y,
+               z:'Z' in w?(abs?w.Z:cur.z+w.Z):cur.z};
+    zMax = Math.max(zMax, n.z);
+    add(ba, cur.x, cur.y); add(ba, n.x, n.y);
+    if (mode >= 1) {
+      add(bc, cur.x, cur.y); add(bc, n.x, n.y);
+      if (mode >= 2) {                       // arco: 32 segmenti come il viewer
+        const i = w.I||0, j = w.J||0, cx = cur.x+i, cy = cur.y+j, r = Math.hypot(i, j);
+        const a0 = Math.atan2(cur.y-cy, cur.x-cx);
+        let da = Math.atan2(n.y-cy, n.x-cx) - a0;
+        if (mode === 2 && da > 0) da -= 2*Math.PI;
+        if (mode === 3 && da < 0) da += 2*Math.PI;
+        for (let k = 1; k <= 32; k++) { const a = a0 + k/32*da; add(bc, cx+r*Math.cos(a), cy+r*Math.sin(a)); }
+      }
+    }
+    cur = n;
+  }
+  const box = isFinite(bc.x0) ? bc : (isFinite(ba.x0) ? ba : null);
+  const safe = sh ? pnum(sh[1]) : (isFinite(zMax) ? zMax : NaN);
+  return {box, safe};
+}
+function setGcText(t) {
+  gcText = t || '';
+  if (gcText) {
+    const a = gcAnalyze(gcText);
+    if (isFinite(a.safe)) { g('acz').value = String(Math.round(a.safe*1000)/1000); g('acz').classList.remove('bad'); }
+  }
+  updAirBtn();
+}
+function updAirBtn() {
+  const b = g('bac'), st = state.stream || {};
+  const ok = !!gcText && gcAnalyze(gcText).box;
+  b.disabled = !!st.running || !(st.total > 0) || !ok;
+  b.title = !gcText ? 'Testo G-code non disponibile in questa pagina: ricarica il file per abilitare l\'air cut'
+          : !ok ? 'Nessun movimento XY nel file'
+          : st.running ? 'Job in corso'
+          : 'Percorre il perimetro XY del file alla quota di sicurezza, mandrino spento';
+}
+function airCut() {
+  if (!gcText) { toast('Ricarica il file G-code per usare l\'air cut'); return; }
+  const st = state.stream || {};
+  if (st.running) { toast('Job in corso: air cut non avviabile'); return; }
+  if (state.grblState === 'Alarm' || state.grblState === 'Disconnected') {
+    toast('GRBL non pronto (Alarm/Disconnected): sblocca con $X o Home'); return;
+  }
+  const a = gcAnalyze(gcText);
+  if (!a.box) { toast('Nessun movimento XY nel file'); return; }
+  const zi = g('acz'), fi = g('acf'), z = pnum(zi.value), f = pnum(fi.value);
+  const zOk = z > 0 && z <= 200, fOk = f >= 1 && f <= 5000;
+  zi.classList.toggle('bad', !zOk); fi.classList.toggle('bad', !fOk);
+  if (!zOk) { toast('Quota di sicurezza non valida (0–200 mm)'); return; }
+  if (!fOk) { toast('Feed non valido (1–5000 mm/min)'); return; }
+  const r = v => (Math.round(v*1000)/1000).toFixed(3).replace(/\.?0+$/, '') || '0';
+  const {x0,x1,y0,y1} = a.box;
+  if (!confirm('Air cut ingombro (mandrino spento)\n\n'+
+      'Rettangolo: '+r(x1-x0)+' × '+r(y1-y0)+' mm\n'+
+      'X '+r(x0)+' … '+r(x1)+'   Y '+r(y0)+' … '+r(y1)+' (coordinate lavoro)\n'+
+      'Quota Z: '+r(z)+' mm   Feed: '+r(f)+' mm/min\n\n'+
+      'Alla fine torna a X0 Y0 restando a Z '+r(z)+'. Avviare?')) return;
+  const txt = ['M5', 'G21 G90', 'G0 Z'+r(z), 'G0 X'+r(x0)+' Y'+r(y0),
+    'G1 X'+r(x1)+' Y'+r(y0)+' F'+r(f), 'G1 X'+r(x1)+' Y'+r(y1),
+    'G1 X'+r(x0)+' Y'+r(y1), 'G1 X'+r(x0)+' Y'+r(y0), 'G0 X0 Y0'].join('\n');
+  send({type:'aircut', text:txt});
+  clog('⬚ Air cut ingombro richiesto: '+r(x1-x0)+'×'+r(y1-y0)+' mm a Z '+r(z),'ok');
+}
+
+function updProg(sent, acked, total) {
+  const pct = total > 0 ? Math.round(100*acked/total) : 0;
+  g('pb').style.width = pct+'%';
+  g('spc').textContent = pct+'%';
+  g('si').textContent = acked+' / '+total+' linee';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MDI
+// ═══════════════════════════════════════════════════════════════════════════
+function sendMDI() {
+  const inp = g('mdi'); const cmd = inp.value.trim();
+  if (!cmd) return;
+  sc(cmd); inp.value = ''; inp.focus();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Zero / WCS / Goto
+// ═══════════════════════════════════════════════════════════════════════════
+function setZero(axes) { send({type:'set_zero', axes}); clog('→ Zero '+axes,'tx'); }
+function probeZ() {
+  const d = g('pd').value||'-20', f = g('pf').value||'50';
+  const t = parseFloat(g('pt').value)||2;
+  ['G91','G38.2 Z'+d+' F'+f,'G10 L20 P1 Z'+t,'G90','G0 Z5'].forEach(c => sc(c));
+  clog('Probe Z avviato (spessore='+t+'mm)','ok');
+}
+function goXY() { sc('G90 G0 X'+g('gtx').value+' Y'+g('gty').value); }
+function goZ()  { sc('G90 G0 Z'+g('gtz').value); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Override
+// ═══════════════════════════════════════════════════════════════════════════
+function odsp(w) {
+  const id = w==='f'?'of':w==='r'?'or':'os';
+  g(id+'-p').textContent = g(id+'-sl').value+'%';
+}
+function sendOv(w, val) {
+  val = parseInt(val);
+  if (w==='f') {
+    rt(OV.FEED_RESET);
+    const d = val-100; const s = Math.floor(Math.abs(d)/10);
+    const c = d>0?OV.FEED_P10:OV.FEED_M10;
+    for(let i=0;i<s;i++) rt(c);
+  } else if (w==='r') {
+    rt(val>=100?OV.RAPID_100:val>=50?OV.RAPID_50:OV.RAPID_25);
+  } else {
+    rt(OV.SP_RESET);
+    const d = val-100; const s = Math.floor(Math.abs(d)/10);
+    const c = d>0?OV.SP_P10:OV.SP_M10;
+    for(let i=0;i<s;i++) rt(c);
+  }
+}
+function iov(w, d) {
+  const id = w==='f'?'of-sl':w==='r'?'or-sl':'os-sl';
+  const sl = g(id);
+  sl.value = Math.min(sl.max, Math.max(sl.min, parseInt(sl.value)+d));
+  odsp(w); sendOv(w, sl.value);
+}
+function rov(w) {
+  const id = w==='f'?'of-sl':w==='r'?'or-sl':'os-sl';
+  g(id).value = 100; odsp(w);
+  rt(w==='f'?OV.FEED_RESET:w==='r'?OV.RAPID_100:OV.SP_RESET);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Impostazioni
+// ═══════════════════════════════════════════════════════════════════════════
+function loadSet() {
+  g('stb').innerHTML = '';
+  send({type:'get_settings'});
+  clog('→ $$','tx');
+}
+function parseSetting(raw) {
+  const eq = raw.indexOf('=');
+  if (eq<0||!raw.startsWith('$')) return;
+  const idx = parseInt(raw.substring(1,eq)); const val = raw.substring(eq+1);
+  if (isNaN(idx)) return;
+  settings[idx] = val;
+  const old = document.getElementById('sr-'+idx);
+  if (old) old.remove();
+  const tr = document.createElement('tr');
+  tr.id = 'sr-'+idx;
+  tr.innerHTML = `<td style="color:var(--bl)">$${idx}</td>
+    <td style="color:var(--muted);font-size:9px">${SDESC[idx]||'—'}</td>
+    <td><input class="sval" id="sv-${idx}" value="${esc(val)}"
+      onkeydown="if(event.key==='Enter')saveSt(${idx})"></td>
+    <td><button class="btn gh sm" onclick="saveSt(${idx})">✓</button></td>`;
+  g('stb').appendChild(tr);
+}
+function saveSt(idx) {
+  const v = g('sv-'+idx).value;
+  send({type:'set_setting', idx, val:v});
+  clog('→ $'+idx+'='+v,'tx'); toast('$'+idx+' salvato');
+}
+function filterSet(q) {
+  q = q.toLowerCase();
+  g('stb').querySelectorAll('tr').forEach(r =>
+    r.style.display = r.textContent.toLowerCase().includes(q)?'':'none');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Console
+// ═══════════════════════════════════════════════════════════════════════════
+const MAX_LOG = 300;
+function clog(msg, cls='rx') {
+  const d = document.createElement('div'); d.className='ll';
+  const now = new Date();
+  d.innerHTML = `<span class="ts">${now.toTimeString().split(' ')[0]}</span>
+    <span class="${cls}">${esc(msg)}</span>`;
+  const con = g('con'); con.appendChild(d);
+  while(con.children.length > MAX_LOG) con.removeChild(con.firstChild);
+  con.scrollTop = con.scrollHeight;
+}
+function clrCon() { g('con').innerHTML=''; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  UI helpers
+// ═══════════════════════════════════════════════════════════════════════════
+function g(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function updConn(v) {
+  g('ws-dot').style.background = v?'var(--gl)':'var(--rl)';
+  g('ws-lbl').textContent = v?'Connesso':'Disconnesso';
+}
+let _toast;
+function toast(msg) {
+  const t = g('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(_toast); _toast = setTimeout(()=>t.classList.remove('on'),2500);
+}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    const paneId = this.dataset.pane;
+    this.closest('.tabs').querySelectorAll('.tab').forEach(t=>t.classList.remove('ac'));
+    this.classList.add('ac');
+    // Panes sono i siblings successivi del contenitore tabs
+    const container = this.closest('.pnl');
+    container.querySelectorAll('.tp').forEach(p=>p.classList.toggle('ac', p.id===paneId));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  G-code Parser & Visualizzatore 3D (Canvas 2D)
+// ═══════════════════════════════════════════════════════════════════════════
+const viewer = (() => {
+  const cv = g('cv');
+  const ctx = cv.getContext('2d');
+  let paths = [];
+  let tool = {x:0,y:0,z:0};
+  let bbox = {x0:0,x1:300,y0:0,y1:200,z0:-80,z1:0};
+  // Camera ortografica: yaw (rotazione attorno a Z), el (elevazione: 0=orizzontale, 90=dall'alto)
+  let yaw = 0, el = 90, scale = 1, panX = 0, panY = 0;
+  let cx0 = 0, cy0 = 0, cz0 = 0;          // punto attorno a cui si ruota (centro modello)
+  let raf = 0;
+  const D2R = Math.PI/180;
+
+  const C = {
+    G0:'#555d6b',G1:'#17c0d0',G2:'#56d364',G3:'#56d364',
+    tool:'#ff7675',bg:'#0d1117',grid:'#1a2234',gridMaj:'#26324a',
+    ax:'#f85149',ay:'#3fb950',az:'#58a6ff',box:'#3b4a66'
+  };
+
+  // ── Preset mouse (come i CAD) ───────────────────────────────────────────
+  // Per ogni preset: azione per [pulsante][modificatore] — modificatori: '', 'shift', 'ctrl'
+  const PRESETS = {
+    fusion:   {name:'Fusion 360',  hint:'Tasto centrale = Pan · Shift+centrale = Orbita · Rotella = Zoom',
+               map:{1:{'':'pan','shift':'orbit','ctrl':'zoom'}, 0:{'':'none'}, 2:{'':'none'}}},
+    solidworks:{name:'SolidWorks', hint:'Tasto centrale = Orbita · Ctrl+centrale = Pan · Shift+centrale = Zoom · Rotella = Zoom',
+               map:{1:{'':'orbit','ctrl':'pan','shift':'zoom'}, 0:{'':'none'}, 2:{'':'none'}}},
+    blender:  {name:'Sinistro/Destro', hint:'Sinistro = Orbita · Destro = Pan · Shift+sinistro = Pan · Rotella = Zoom',
+               map:{0:{'':'orbit','shift':'pan','ctrl':'zoom'}, 2:{'':'pan'}, 1:{'':'pan','shift':'orbit'}}}
+  };
+  let opt = {preset:'solidworks', zoomCursor:true, invZoom:false};
+  try { Object.assign(opt, JSON.parse(localStorage.getItem('cncViewOpt')||'{}')); } catch(e) {}
+  if (!PRESETS[opt.preset]) opt.preset = 'fusion';
+  function saveOpt(){ try{localStorage.setItem('cncViewOpt',JSON.stringify(opt));}catch(e){} }
+
+  function resize() {
+    cv.width  = cv.offsetWidth;
+    cv.height = cv.offsetHeight;
+    fit(); draw();
+  }
+
+  // Proiezione: restituisce {sx, sy, d} (d = profondità, per eventuali usi)
+  function proj(x,y,z) {
+    x -= cx0; y -= cy0; z -= cz0;
+    const cy = Math.cos(yaw*D2R), sy = Math.sin(yaw*D2R);
+    const ce = Math.cos(el*D2R),  se = Math.sin(el*D2R);
+    const xr = x*cy - y*sy;
+    const yr = x*sy + y*cy;
+    const up = z*ce + yr*se;
+    const d  = yr*ce - z*se;
+    return {sx: cv.width/2 + panX + xr*scale, sy: cv.height/2 + panY - up*scale, d};
+  }
+
+  function corners() {
+    const b = bbox, pts = [];
+    for (const x of [Math.min(b.x0,0),Math.max(b.x1,0)])
+      for (const y of [Math.min(b.y0,0),Math.max(b.y1,0)])
+        for (const z of [b.z0,b.z1]) pts.push([x,y,z]);
+    return pts;
+  }
+
+  function fit() {
+    const b = bbox;
+    cx0 = (Math.min(b.x0,0)+Math.max(b.x1,0))/2;
+    cy0 = (Math.min(b.y0,0)+Math.max(b.y1,0))/2;
+    cz0 = (b.z0+b.z1)/2;
+    scale = 1; panX = panY = 0;
+    let mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity;
+    for (const p of corners()) {
+      const s = proj(p[0],p[1],p[2]);
+      mnx=Math.min(mnx,s.sx); mxx=Math.max(mxx,s.sx);
+      mny=Math.min(mny,s.sy); mxy=Math.max(mxy,s.sy);
+    }
+    const pad = 40;
+    const w = (mxx-mnx)||1, h = (mxy-mny)||1;
+    scale = Math.max(0.01, Math.min((cv.width-pad*2)/w, (cv.height-pad*2)/h));
+    panX = panY = 0;
+  }
+
+  function schedule() { if (!raf) raf = requestAnimationFrame(()=>{raf=0; draw();}); }
+
+  function line(a,b) {
+    const p=proj(a[0],a[1],a[2]), q=proj(b[0],b[1],b[2]);
+    ctx.moveTo(p.sx,p.sy); ctx.lineTo(q.sx,q.sy);
+  }
+
+  function niceStep() {
+    const target = 60/scale;                 // ~60 px tra linee
+    const pow = Math.pow(10, Math.floor(Math.log10(target)));
+    for (const m of [1,2,5,10]) if (pow*m >= target) return pow*m;
+    return pow*10;
+  }
+
+  function drawGrid() {
+    const step = niceStep();
+    const b = bbox;
+    const x0 = Math.floor((Math.min(b.x0,0)-step)/step)*step, x1 = Math.ceil((Math.max(b.x1,0)+step)/step)*step;
+    const y0 = Math.floor((Math.min(b.y0,0)-step)/step)*step, y1 = Math.ceil((Math.max(b.y1,0)+step)/step)*step;
+    ctx.lineWidth = 0.6;
+    ctx.strokeStyle = C.grid;
+    ctx.beginPath();
+    for (let x=x0; x<=x1+1e-9; x+=step) line([x,y0,0],[x,y1,0]);
+    for (let y=y0; y<=y1+1e-9; y+=step) line([x0,y,0],[x1,y,0]);
+    ctx.stroke();
+    // Box del lavoro (bbox del G-code)
+    if (paths.length) {
+      ctx.strokeStyle = C.box; ctx.lineWidth = 0.8; ctx.setLineDash([3,3]);
+      ctx.beginPath();
+      const X=[b.x0,b.x1],Y=[b.y0,b.y1],Z=[b.z0,b.z1];
+      for (const z of Z){ line([X[0],Y[0],z],[X[1],Y[0],z]); line([X[1],Y[0],z],[X[1],Y[1],z]);
+                          line([X[1],Y[1],z],[X[0],Y[1],z]); line([X[0],Y[1],z],[X[0],Y[0],z]); }
+      for (const x of X) for (const y of Y) line([x,y,Z[0]],[x,y,Z[1]]);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    // Assi origine
+    const L = Math.max(step*1.5, 10);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle=C.ax; ctx.beginPath(); line([0,0,0],[L,0,0]); ctx.stroke();
+    ctx.strokeStyle=C.ay; ctx.beginPath(); line([0,0,0],[0,L,0]); ctx.stroke();
+    ctx.strokeStyle=C.az; ctx.beginPath(); line([0,0,0],[0,0,L]); ctx.stroke();
+    ctx.font='bold 10px monospace';
+    let p=proj(L,0,0); ctx.fillStyle=C.ax; ctx.fillText('X',p.sx+4,p.sy-4);
+    p=proj(0,L,0);     ctx.fillStyle=C.ay; ctx.fillText('Y',p.sx+4,p.sy-4);
+    p=proj(0,0,L);     ctx.fillStyle=C.az; ctx.fillText('Z',p.sx+4,p.sy-4);
+  }
+
+  function drawPaths() {
+    for (const p of paths) {
+      if (p.pts.length<2) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = C[p.type]||C.G1;
+      ctx.lineWidth   = p.type==='G0'?.7:1.2;
+      ctx.setLineDash(p.type==='G0'?[4,4]:[]);
+      const s0=proj(p.pts[0].x,p.pts[0].y,p.pts[0].z);
+      ctx.moveTo(s0.sx,s0.sy);
+      for (let i=1;i<p.pts.length;i++) {
+        const s=proj(p.pts[i].x,p.pts[i].y,p.pts[i].z);
+        ctx.lineTo(s.sx,s.sy);
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+
+  // Indicatore punta: cono 3D (punta verso il basso) disegnato in world-space
+  // nella posizione WPos ricevuta da GRBL. Disegnato per ultimo → sempre visibile.
+  function drawTool() {
+    const b = bbox;
+    const maxDim = Math.max(b.x1-b.x0, b.y1-b.y0, b.z1-b.z0, 1);
+    const h = Math.min(10, Math.max(2, maxDim*0.025));   // altezza cono [mm]
+    const r = h*0.4;                                      // raggio base [mm]
+    const s = proj(tool.x,tool.y,tool.z);
+    const g0 = proj(tool.x,tool.y,0);
+    // linea di quota verso il piano Z=0
+    ctx.strokeStyle = C.tool+'66'; ctx.lineWidth = 1; ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(s.sx,s.sy); ctx.lineTo(g0.sx,g0.sy); ctx.stroke(); ctx.setLineDash([]);
+    // punti proiettati: punta + cerchio di base a Z+h
+    const N = 20, pts = [[s.sx,s.sy]], base = [];
+    for (let i=0;i<N;i++){ const a=i/N*Math.PI*2;
+      const q = proj(tool.x+r*Math.cos(a), tool.y+r*Math.sin(a), tool.z+h);
+      base.push([q.sx,q.sy]); pts.push([q.sx,q.sy]); }
+    // inviluppo convesso (monotone chain) = sagoma del cono
+    pts.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+    const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+    const lo=[],up=[];
+    for (const p of pts){ while(lo.length>=2&&cr(lo[lo.length-2],lo[lo.length-1],p)<=0) lo.pop(); lo.push(p); }
+    for (let i=pts.length-1;i>=0;i--){ const p=pts[i]; while(up.length>=2&&cr(up[up.length-2],up[up.length-1],p)<=0) up.pop(); up.push(p); }
+    const hull = lo.slice(0,-1).concat(up.slice(0,-1));
+    // dimensione minima a schermo, per restare visibile anche con zoom lontano
+    let ext = 0; for (const p of hull) ext = Math.max(ext, Math.hypot(p[0]-s.sx,p[1]-s.sy));
+    const k = ext < 14 ? 14/Math.max(ext,1e-3) : 1;
+    const T = p => [s.sx+(p[0]-s.sx)*k, s.sy+(p[1]-s.sy)*k];
+    ctx.beginPath(); hull.forEach((p,i)=>{const t=T(p); i?ctx.lineTo(t[0],t[1]):ctx.moveTo(t[0],t[1]);}); ctx.closePath();
+    ctx.fillStyle = '#21262d'; ctx.fill();
+    ctx.strokeStyle = '#c9d1d9'; ctx.lineWidth = 1.2; ctx.stroke();
+    // bordo della base (ellisse)
+    ctx.beginPath(); base.forEach((p,i)=>{const t=T(p); i?ctx.lineTo(t[0],t[1]):ctx.moveTo(t[0],t[1]);}); ctx.closePath();
+    ctx.fillStyle = '#30363d'; ctx.fill(); ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1; ctx.stroke();
+    // punto rosso sulla punta
+    ctx.beginPath(); ctx.arc(s.sx,s.sy,2.2,0,Math.PI*2); ctx.fillStyle = C.tool; ctx.fill();
+  }
+
+  function draw() {
+    ctx.fillStyle=C.bg; ctx.fillRect(0,0,cv.width,cv.height);
+    drawGrid(); drawPaths(); drawTool();
+    ctx.font='10px monospace'; ctx.fillStyle='#6e7681';
+    ctx.fillText(PRESETS[opt.preset].name+' · '+(Math.round(el)===90?'Alto':'3D'), 8, cv.height-8);
+  }
+
+  // ── G-code parser (G0,G1,G2,G3 con archi) ───────────────────────────────
+  function parseGc(text) {
+    paths=[];
+    const lines=text.split('\n');
+    let cur={x:0,y:0,z:0}, mode='G0', abs=true;
+    let curPath=null;
+    let bx0=Infinity,bx1=-Infinity,by0=Infinity,by1=-Infinity,bz0=0,bz1=0;
+
+    function newPath(type) {
+      if(curPath&&curPath.pts.length>1) paths.push(curPath);
+      curPath={type, pts:[{...cur}]};
+    }
+    function push(pt) {
+      if(!curPath||curPath.type!==mode) newPath(mode);
+      curPath.pts.push({...pt});
+    }
+    function arcPts(nx,ny,nz,i,j,cw,segs=32) {
+      const cx=cur.x+i, cy=cur.y+j;
+      const r=Math.sqrt(i*i+j*j);
+      let a0=Math.atan2(cur.y-cy,cur.x-cx);
+      let a1=Math.atan2(ny-cy,nx-cx);
+      let da=a1-a0;
+      if(cw&&da>0) da-=2*Math.PI;
+      if(!cw&&da<0) da+=2*Math.PI;
+      const pts=[];
+      for(let k=1;k<=segs;k++) {
+        const a=a0+(k/segs)*da;
+        const tz=cur.z+(nz-cur.z)*(k/segs);
+        pts.push({x:cx+r*Math.cos(a), y:cy+r*Math.sin(a), z:tz});
+      }
+      return pts;
+    }
+
+    for(const raw of lines) {
+      let ln=raw.trim().toUpperCase();
+      const ci=ln.indexOf(';'); if(ci>=0) ln=ln.substring(0,ci).trim();
+      const pi=ln.indexOf('('); if(pi>=0) ln=ln.substring(0,pi).trim();
+      if(!ln) continue;
+      const ws={}; const re=/([A-Z])([-+]?[0-9]*\.?[0-9]+)/g; let m;
+      while((m=re.exec(ln))!==null) ws[m[1]]=parseFloat(m[2]);
+      if('G' in ws) {
+        const gv=ws['G'];
+        if(gv===90) abs=true;
+        else if(gv===91) abs=false;
+        else if([0,1,2,3].includes(gv)) mode='G'+gv;
+      }
+      if('X' in ws||'Y' in ws||'Z' in ws) {
+        const nx='X' in ws?(abs?ws['X']:cur.x+ws['X']):cur.x;
+        const ny='Y' in ws?(abs?ws['Y']:cur.y+ws['Y']):cur.y;
+        const nz='Z' in ws?(abs?ws['Z']:cur.z+ws['Z']):cur.z;
+        if(mode==='G2'||mode==='G3') {
+          const i=ws['I']||0, j=ws['J']||0;
+          const aps=arcPts(nx,ny,nz,i,j,mode==='G2');
+          if(!curPath||curPath.type!==mode) newPath(mode);
+          for(const ap of aps) curPath.pts.push(ap);
+        } else {
+          push({x:nx,y:ny,z:nz});
+        }
+        cur={x:nx,y:ny,z:nz};
+        bx0=Math.min(bx0,cur.x);bx1=Math.max(bx1,cur.x);
+        by0=Math.min(by0,cur.y);by1=Math.max(by1,cur.y);
+        bz0=Math.min(bz0,cur.z);bz1=Math.max(bz1,cur.z);
+      }
+    }
+    if(curPath&&curPath.pts.length>1) paths.push(curPath);
+    if(isFinite(bx0)) bbox={x0:bx0,x1:bx1,y0:by0,y1:by1,z0:bz0,z1:bz1};
+    fit(); draw();
+  }
+
+  // ── Interazione mouse ───────────────────────────────────────────────────
+  let drag = null;   // {action, lx, ly}
+  function modOf(e){ return e.shiftKey ? 'shift' : (e.ctrlKey||e.metaKey ? 'ctrl' : ''); }
+
+  function doOrbit(dx,dy){
+    yaw -= dx*0.4;
+    el = Math.max(-90, Math.min(90, el + dy*0.4));
+  }
+  function doZoomAt(factor, mx, my){
+    const ns = Math.max(0.01, Math.min(scale*factor, 5000));
+    factor = ns/scale; scale = ns;
+    if (opt.zoomCursor) {
+      // mantiene fermo il punto sotto il cursore
+      const ox = mx - cv.width/2, oy = my - cv.height/2;
+      panX = ox - (ox - panX)*factor;
+      panY = oy - (oy - panY)*factor;
+    }
+  }
+
+  cv.addEventListener('contextmenu', e=>e.preventDefault());
+  cv.addEventListener('mousedown', e=>{
+    const m = PRESETS[opt.preset].map[e.button];
+    if (!m) return;
+    const a = m[modOf(e)] || m[''] || 'none';
+    if (e.button===1) e.preventDefault();
+    if (a==='none') return;
+    drag = {action:a, lx:e.clientX, ly:e.clientY};
+  });
+  window.addEventListener('mousemove', e=>{
+    if (!drag) return;
+    const dx=e.clientX-drag.lx, dy=e.clientY-drag.ly;
+    drag.lx=e.clientX; drag.ly=e.clientY;
+    if (drag.action==='orbit') doOrbit(dx,dy);
+    else if (drag.action==='pan') { panX+=dx; panY+=dy; }
+    else if (drag.action==='zoom') {
+      const r=cv.getBoundingClientRect();
+      doZoomAt(Math.exp(-dy*0.01*(opt.invZoom?-1:1)), r.width/2, r.height/2);
+    }
+    schedule();
+  });
+  window.addEventListener('mouseup', ()=>{ drag=null; });
+  cv.addEventListener('mousemove', e=>{
+    // coordinate sotto il cursore sul piano Z=0 (ha senso in vista dall'alto)
+    if (Math.abs(el-90)<0.5) {
+      const r=cv.getBoundingClientRect();
+      const px=(e.clientX-r.left-cv.width/2-panX)/scale;
+      const py=-(e.clientY-r.top-cv.height/2-panY)/scale;
+      const cy=Math.cos(yaw*D2R), sy=Math.sin(yaw*D2R);
+      const wx = px*cy + py*sy + cx0, wy = -px*sy + py*cy + cy0;
+      g('cpos').textContent='X'+wx.toFixed(2)+' Y'+wy.toFixed(2);
+    } else g('cpos').textContent='—';
+  });
+  cv.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const r=cv.getBoundingClientRect();
+    const up = (e.deltaY<0) !== opt.invZoom;
+    doZoomAt(up?1.15:1/1.15, e.clientX-r.left, e.clientY-r.top);
+    schedule();
+  }, {passive:false});
+  cv.addEventListener('dblclick', ()=>{ fit(); draw(); });
+
+  // Touch: 1 dito = orbita, 2 dita = pan + pinch zoom
+  let tl = null;
+  cv.addEventListener('touchstart', e=>{
+    if (e.touches.length===1) tl={n:1,x:e.touches[0].clientX,y:e.touches[0].clientY};
+    else if (e.touches.length===2) {
+      const a=e.touches[0],b=e.touches[1];
+      tl={n:2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2};
+    }
+  },{passive:true});
+  cv.addEventListener('touchmove', e=>{
+    e.preventDefault();
+    if (!tl) return;
+    const r=cv.getBoundingClientRect();
+    if (e.touches.length===1 && tl.n===1) {
+      const t=e.touches[0]; doOrbit(t.clientX-tl.x, t.clientY-tl.y); tl.x=t.clientX; tl.y=t.clientY;
+    } else if (e.touches.length===2 && tl.n===2) {
+      const a=e.touches[0],b=e.touches[1];
+      const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+      const mx=(a.clientX+b.clientX)/2, my=(a.clientY+b.clientY)/2;
+      panX+=mx-tl.x; panY+=my-tl.y;
+      doZoomAt(d/tl.d, mx-r.left, my-r.top);
+      tl.d=d; tl.x=mx; tl.y=my;
+    }
+    schedule();
+  },{passive:false});
+  cv.addEventListener('touchend', ()=>{ tl=null; });
+
+  new ResizeObserver(resize).observe(cv.parentElement);
+
+  // ── Pannello opzioni ────────────────────────────────────────────────────
+  function initOpts() {
+    const sel = g('vo-preset');
+    sel.innerHTML = Object.keys(PRESETS).map(k=>'<option value="'+k+'">'+PRESETS[k].name+'</option>').join('');
+    function refresh(){
+      sel.value = opt.preset;
+      g('vo-hint').textContent = PRESETS[opt.preset].hint;
+      g('vo-zc').checked = opt.zoomCursor;
+      g('vo-iz').checked = opt.invZoom;
+    }
+    sel.onchange = ()=>{ opt.preset=sel.value; saveOpt(); refresh(); draw(); };
+    g('vo-zc').onchange = e=>{ opt.zoomCursor=e.target.checked; saveOpt(); };
+    g('vo-iz').onchange = e=>{ opt.invZoom=e.target.checked; saveOpt(); };
+    refresh();
+  }
+  initOpts();
+
+  const VIEWS = {top:[0,90], front:[0,0], side:[-90,0], iso:[-45,35]};
+  return {
+    setView(v){
+      [yaw,el] = VIEWS[v] || VIEWS.iso;
+      ['vt','vf','vs','vi'].forEach(id=>g(id).classList.remove('ac'));
+      g('v'+v[0]).classList.add('ac');
+      fit(); draw();
+    },
+    setTool(x,y,z){ tool={x,y,z}; schedule(); },
+    clearPath(){ paths=[]; draw(); },
+    fit(){ fit(); draw(); },
+    reset(){ yaw=0; el=90; ['vt','vf','vs','vi'].forEach(id=>g(id).classList.remove('ac')); g('vt').classList.add('ac'); fit(); draw(); },
+    parse:parseGc
+  };
+})();
+
+function setView(v) { viewer.setView(v); }
+function parseViz(txt) {
+  gcLines = txt.split('\n').filter(l=>l.trim().length>0);
+  viewer.parse(txt);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Keyboard shortcuts
+// ═══════════════════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  const inp = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  if (e.key === 'Escape') { e.preventDefault(); jogStop(); }
+  if (!inp) {
+    if (e.key === ' ')  { e.preventDefault(); rt(0x21); }          // Space = Feed Hold
+    if (e.key === '~')  { e.preventDefault(); rt(0x7E); }          // ~ = Cycle Start
+    if (e.ctrlKey&&e.key==='r') { e.preventDefault(); rt(0x18); }  // Ctrl+R = Reset
+    // Numpad jog
+    const nm = {'4':['X-1'],'6':['X1'],'8':['Y1'],'2':['Y-1'],
+                 '7':['X-1 Y1'],'9':['X1 Y1'],'1':['X-1 Y-1'],'3':['X1 Y-1'],
+                 'Add':['Z1'],'Subtract':['Z-1']};
+    if (nm[e.code?.replace('Numpad','')]||nm[e.key]) {
+      e.preventDefault();
+      jog((nm[e.code?.replace('Numpad','')]||nm[e.key])[0]);
+    }
+    // Step size shortcuts
+    if (e.key==='[') stepPreset(-1);
+    if (e.key===']') stepPreset(1);
+  }
+});
+
+// ═══ Divisori colonne ridimensionabili ═══
+function initDividers(){
+  const grid=g('grid');
+  function mk(id,side){
+    g(id).addEventListener('mousedown',e=>{
+      e.preventDefault();g(id).classList.add('cdrag');
+      const st=getComputedStyle(grid).gridTemplateColumns.split(' ');
+      const startX=e.clientX, startPx=parseFloat(side==='l'?st[0]:st[4]);
+      const mv=e=>{const dx=e.clientX-startX; const np=Math.max(160,Math.min(600,startPx+(side==='l'?dx:-dx)));
+        grid.style.setProperty(side==='l'?'--cw-l':'--cw-r',np+'px');};
+      const up=()=>{g(id).classList.remove('cdrag');window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);};
+      window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up);
+    });
+  }
+  mk('cdiv1','l'); mk('cdiv2','r');
+}
+
+// ═══ Significato errori/allarmi GRBL ═══
+const GRBL_ERR={1:'G-code: lettera senza numero',2:'formato numero non valido',3:'comando $ non riconosciuto',4:'valore negativo non ammesso',5:'homing non abilitato ($22=0)',6:'step pulse minimo < 3 µs',7:'lettura EEPROM fallita (ripristinati i default)',8:'comando $ consentito solo a macchina ferma (Idle)',9:'G-code bloccato durante allarme o jog (usa $X)',10:'soft limit richiede homing abilitato',11:'riga troppo lunga',12:'step rate $ troppo alto',13:'porta di sicurezza aperta',14:'riga di startup/build info troppo lunga',15:'target del jog oltre la corsa macchina',16:'comando jog non valido',17:'laser mode richiede PWM',20:'comando G-code non supportato o non valido',21:'conflitto di gruppo modale G-code',22:'feed rate non impostato',23:'il comando richiede un valore intero',24:'due comandi usano entrambi assi',25:'parola G-code ripetuta nella riga',26:'assi mancanti nel comando',27:'numero di riga non valido',28:'manca un valore (P/L...)',29:'G59.x non supportato',30:'G53 richiede G0 o G1',31:'assi presenti ma non necessari',32:'G2/G3 richiede almeno un asse',33:'target del movimento non valido',34:'errore raggio arco',35:'G2/G3 senza I/J/K',36:'parole inutilizzate nella riga',37:'errore offset G43.1',38:'numero utensile troppo alto'};
+const GRBL_ALM={1:'finecorsa hard attivato',2:'soft limit: movimento oltre la corsa',3:'reset durante il movimento: posizione persa, rifai homing',4:'probe: stato iniziale non corretto',5:'probe: nessun contatto',6:'homing fallito: reset durante il ciclo',7:'homing fallito: porta aperta',8:'homing fallito: pull-off non riuscito',9:'homing fallito: finecorsa non trovato'};
+function errTxt(c){return GRBL_ERR[parseInt(c)]||'codice sconosciuto';}
+function almTxt(c){return GRBL_ALM[parseInt(c)]||'codice sconosciuto';}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  connectWS();
+  initDividers();
+  // Listener enter per MDI
+  g('mdi').addEventListener('keydown', e => { if(e.key==='Enter') sendMDI(); });
+  // Step jog personalizzato: Invio o change applicano, digitando si toglie il rosso
+  const ci = g('stc');
+  ci.addEventListener('keydown', e => { if(e.key==='Enter') { applyStepInput(); ci.blur(); } });
+  ci.addEventListener('change', applyStepInput);
+  ci.addEventListener('input', () => ci.classList.remove('bad'));
+  ['acz','acf'].forEach(id => g(id).addEventListener('input', () => g(id).classList.remove('bad')));
+});
+</script>
+</body>
+</html>

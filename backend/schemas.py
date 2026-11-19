@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Material = Literal["softwood", "hardwood", "aluminum"]
 Operation = Literal["profile_on", "profile_inside", "profile_outside", "pocket"]
+ToolType = Literal["flat", "ball", "vbit"]
 
 
 # ---------- Entity ----------
@@ -36,6 +37,14 @@ class LayerBase(BaseModel):
     tool_id: Optional[str] = None
     operation: Operation = "profile_outside"
     params: dict[str, Any] = Field(default_factory=dict)
+    # parametri di taglio del layer
+    tool_diameter: float = Field(default=3.175, ge=0, le=50)
+    tool_type: ToolType = "flat"
+    feed_rate: float = Field(default=600.0, gt=0)
+    spindle_rpm: int = Field(default=12000, ge=0)
+    z_safe: float = Field(default=5.0, ge=0)
+    z_depth: float = Field(default=-2.0, le=0)
+    z_pass_depth: float = Field(default=1.0, gt=0)
 
 
 class LayerCreate(LayerBase):
@@ -50,6 +59,13 @@ class LayerUpdate(BaseModel):
     params: Optional[dict[str, Any]] = None
     is_complete: Optional[bool] = None
     draw_layers: Optional[list[dict[str, Any]]] = None
+    tool_diameter: Optional[float] = Field(default=None, ge=0, le=50)
+    tool_type: Optional[ToolType] = None
+    feed_rate: Optional[float] = Field(default=None, gt=0)
+    spindle_rpm: Optional[int] = Field(default=None, ge=0)
+    z_safe: Optional[float] = Field(default=None, ge=0)
+    z_depth: Optional[float] = Field(default=None, le=0)
+    z_pass_depth: Optional[float] = Field(default=None, gt=0)
 
 
 class LayerResponse(LayerBase):
@@ -102,7 +118,7 @@ class ProjectDetail(ProjectResponse):
 class GenerateRequest(BaseModel):
     operation: Optional[Operation] = None
     tool_id: Optional[str] = None
-    depth_total: float = Field(default=3.0, gt=0)
+    depth_total: Optional[float] = Field(default=None, gt=0)  # None = -z_depth del layer
     depth_per_pass: Optional[float] = Field(default=None, gt=0)
     feed_rate: Optional[float] = Field(default=None, gt=0)
     plunge_rate: Optional[float] = Field(default=None, gt=0)

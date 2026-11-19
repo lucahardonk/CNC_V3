@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import {
   angleBetweenLines, angleOf, arcFrom3, arcStartEndRadius, arcSweep, bbox, catmullRomPath, catmullRomPoints, circumcircle,
   closestOnEntity, cross, dimLinePoints, dist, dot, explodeRect, explodeSlot, filletLines, isDim, keyPoints, mirrorEntity,
-  normRect, applyDimParam, dimLiveData, dimValue, syncDims, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, computeNodes, trimClick, uid, unit,
+  normRect, rectBox, applyDimParam, dimLiveData, dimValue, syncDims, polar, polygonLines, rad, rect3Corners, rotateEntity, round3, rp, slotPath, sub, translate, computeNodes, trimClick, uid, unit,
 } from './geometry'
 import {
   ORIGIN_ID, autoCoincide, coincident, constraintPos, fillDimValues, getPt, hasCoincident, isConstraint, isGeo, isLinkedDim, isStretch,
@@ -11,6 +11,17 @@ import {
 } from './constraints'
 import { SELECTION_TOOLS, toolForKey } from './Toolbar'
 import { DEFAULT_LAYER_COLOR, layerOf } from './drawLayers'
+import { toolpathOffsets } from './toolpathPreview'
+
+// Passo griglia: parte da grid_size e si moltiplica ×5 finché le linee distano almeno GRID_MIN_PX pixel.
+// Usato sia per disegnare la griglia sia per lo snap: i punti agganciati cadono sempre sulle linee visibili.
+const GRID_MIN_PX = 8
+const gridStep = (base, scale) => {
+  let g = base > 0 ? base : 1
+  while (g * scale < GRID_MIN_PX) g *= 5
+  return g
+}
+const TOOLPATH_COLOR = 'rgba(249,115,22,0.75)'
 
 const COLORS = { normal: '#e5e7eb', selected: '#3b82f6', hover: '#93c5fd', construction: '#6b7280', bridge: '#f97316', dim: '#facc15', preview: '#22c55e', measure: '#22d3ee', point: '#d946ef', midCtr: '#22d3ee' }
 // Colore dei key-point/snap per categoria: vertice, punto medio, centro, entità Punto
@@ -39,7 +50,7 @@ const lineLen = (l) => Math.hypot(l.data.x2 - l.data.x1, l.data.y2 - l.data.y1)
 export default function CADCanvas({
   entities, onChange, selected, setSelected, tool, setTool, stock, ui, options, onContextMenu, notify,
   onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [], pickLine = null,
-  drawLayers = [], fitRequest = null, onMeasure = null,
+  drawLayers = [], fitRequest = null, onMeasure = null, toolpath = null,
 }) {
   const wrap = useRef(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
@@ -116,8 +127,7 @@ export default function CADCanvas({
     }
     if (best) return { p: { x: best.k.x, y: best.k.y }, snap: best.k }
     if (ui?.snap_enabled) {
-      let g = ui.grid_size || 1
-      while (g * v.s < 6) g *= 5
+      const g = gridStep(ui.grid_size, v.s)
       return { p: { x: round3(Math.round(raw.x / g) * g), y: round3(Math.round(raw.y / g) * g) }, snap: null }
     }
     return { p: { x: round3(raw.x), y: round3(raw.y) }, snap: null }
@@ -277,7 +287,8 @@ export default function CADCanvas({
         return { title: 'Spline', rows: [['Lunghezza', `${fmt(L, 3)} mm`], ['Punti', d.points.length]] }
       }
       case 'rect':
-        return { title: 'Rettangolo', rows: [['Larghezza', `${fmt(d.w, 3)} mm`], ['Altezza', `${fmt(d.h, 3)} mm`], ['Area', `${fmt(d.w * d.h)} mm²`]] }
+        const r = rectBox(d)
+        return { title: 'Rettangolo', rows: [['Larghezza', `${fmt(r.w, 3)} mm`], ['Altezza', `${fmt(r.h, 3)} mm`], ['Area', `${fmt(r.w * r.h)} mm²`]] }
       default: return { title: e.type, rows: [] }
     }
   }
@@ -903,8 +914,7 @@ export default function CADCanvas({
   // ---------------------------------------------------------------- render helpers
   const grid = useMemo(() => {
     if (!view) return null
-    let g = ui?.grid_size || 1
-    while (g * v.s < 8) g *= 5
+    const g = gridStep(ui?.grid_size, v.s)
     const major = g * 10
     const tl = toW(0, 0), br = toW(size.w, size.h)
     const lines = []
@@ -968,8 +978,9 @@ export default function CADCanvas({
         return <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} {...common} />
       }
       case 'rect': case 'bridge': {
-        const a = toS({ x: d.x, y: d.y + d.h })
-        return <rect key={key} x={a.x} y={a.y} width={d.w * v.s} height={d.h * v.s} {...common}
+        const r = rectBox(d) // w/h negativi → normalizzati (SVG non accetta dimensioni negative)
+        const a = toS({ x: r.x, y: r.y + r.h })
+        return <rect key={key} x={a.x} y={a.y} width={r.w * v.s} height={r.h * v.s} {...common}
           fill={e.type === 'bridge' && !opts.ghost ? 'rgba(249,115,22,0.25)' : 'none'} />
       }
       case 'circle': {
@@ -1008,7 +1019,7 @@ export default function CADCanvas({
           <g key={key}>
             <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} {...common} markerStart={d.diam ? 'url(#arrow)' : undefined} markerEnd="url(#arrow)" />
             {!d.diam && <circle cx={tail.x} cy={tail.y} r={2} fill={stroke} />}
-            {editingDim?.id !== e.id && anchoredText(opts.ghost ? {} : e, mid.x, mid.y, ang, lbl(d.diam ? `Ø ${fmt(2 * d.r)} mm` : `R ${fmt(d.r)} mm`), stroke, ref)}
+            {editingDim?.id !== e.id && anchoredText(opts.ghost ? {} : e, mid.x, mid.y, ang, lbl(d.diam ? `Ø ${fmt(2 * Math.abs(d.r))} mm` : `R ${fmt(Math.abs(d.r))} mm`), stroke, ref)}
           </g>
         )
       }
@@ -1149,6 +1160,16 @@ export default function CADCanvas({
     )
   }
 
+  const toolpathMM = useMemo(() => (toolpath?.diameter > 0 ? toolpathOffsets(geo, toolpath.diameter, toolpath.operation) : []),
+    [geo, toolpath?.diameter, toolpath?.operation])
+  const toolpathEls = toolpathMM.length > 0 && (
+    <g pointerEvents="none">
+      {toolpathMM.map((t, i) => (
+        <polyline key={'tp' + i} points={(t.closed ? [...t.pts, t.pts[0]] : t.pts).map((p) => { const s = toS(p); return `${s.x},${s.y}` }).join(' ')}
+          fill="none" stroke={TOOLPATH_COLOR} strokeWidth={1.2} strokeDasharray="6 4" strokeLinejoin="round" />
+      ))}
+    </g>
+  )
   const shown = (dragPreview ? entities.map((x) => dragPreview.get(x.id) || x) : entities).filter((x) => !hiddenIds.has(x.id))
   const shownMap = dragPreview || entMap
   const nodes = tool === 'trim' ? nodeList : []
@@ -1209,6 +1230,8 @@ export default function CADCanvas({
         <line x1={origin.x - 14} y1={origin.y} x2={origin.x + 30} y2={origin.y} stroke="#ef4444" strokeWidth={1.5} />
         <line x1={origin.x} y1={origin.y + 14} x2={origin.x} y2={origin.y - 30} stroke="#22c55e" strokeWidth={1.5} />
         <circle cx={origin.x} cy={origin.y} r={3} fill="#ef4444" />
+        {/* anteprima percorso utensile (offset = raggio fresa del layer) */}
+        {toolpathEls}
         {/* altri layer: colore del layer, opacità 0.4, non interattivi */}
         <g opacity={0.4} pointerEvents="none">
           {otherLayerEntities.map((l, li) => l.entities.map((e) => renderEntity(e, `ol${li}_${e.id}`, { color: l.color, width: 1, ghost: true })))}
