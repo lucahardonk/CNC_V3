@@ -3,7 +3,7 @@ import { Eye, EyeOff, GripVertical, Lock, LockOpen, Plus, Trash2, CornerDownLeft
 import Modal from '../common/Modal'
 import Button from '../common/Button'
 import Tooltip from '../common/Tooltip'
-import { DEFAULT_LAYER_ID, LAYER_PALETTE, nextLayerColor } from './drawLayers'
+import { DEFAULT_LAYER_ID, LAYER_PALETTE, nextLayerColor, nextLayerName } from './drawLayers'
 
 const DRAG_MIME = 'application/x-cnc-selection'
 
@@ -27,7 +27,7 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
           <Tooltip text="Nuovo layer (nome + colore)">
             <button onClick={openAdd} className="rounded p-1 text-gray-300 hover:bg-bg-hover hover:text-white"><Plus size={15} /></button>
           </Tooltip>
-          <Tooltip text={active?.id === DEFAULT_LAYER_ID ? 'Il Layer 0 non può essere eliminato' : `Elimina "${active?.name}" (entità → Layer 0)`}>
+          <Tooltip text={active?.id === DEFAULT_LAYER_ID ? `Il primo layer (${active?.name}) non può essere eliminato` : `Elimina "${active?.name}" (entità → ${layers[0]?.name})`}>
             <button disabled={!active || active.id === DEFAULT_LAYER_ID} onClick={() => setToDelete(active)}
               className="rounded p-1 text-red-400 hover:bg-red-500/15 disabled:opacity-30"><Trash2 size={15} /></button>
           </Tooltip>
@@ -110,7 +110,7 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
 
       <Modal open={!!toDelete} onClose={() => setToDelete(null)} title="Elimina layer"
         footer={<><Button onClick={() => setToDelete(null)}>Annulla</Button><Button variant="danger" onClick={() => { onDelete(toDelete.id); setToDelete(null) }}>Elimina</Button></>}>
-        <p className="text-sm text-gray-300">Eliminare il layer <b className="text-white">{toDelete?.name}</b>? Le sue <b className="text-white">{counts[toDelete?.id] || 0}</b> entità verranno spostate sul <b className="text-white">Layer 0</b>.</p>
+        <p className="text-sm text-gray-300">Eliminare il layer <b className="text-white">{toDelete?.name}</b>? Le sue <b className="text-white">{counts[toDelete?.id] || 0}</b> entità verranno spostate sul layer <b className="text-white">{layers[0]?.name}</b>.</p>
       </Modal>
     </div>
   )
@@ -125,7 +125,7 @@ const IconBtn = ({ children, tip, onClick, className = '' }) => (
 // Dialog nuovo layer (nome + colore), riusato anche dal menu tasto destro del canvas
 export function NewLayerModal({ open, layers, selectionCount = 0, onCancel, onCreate, title = 'Nuovo layer' }) {
   const [f, setF] = useState({ name: '', color: LAYER_PALETTE[1] })
-  useEffect(() => { if (open) setF({ name: `Layer ${layers.length}`, color: nextLayerColor(layers) }) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) setF({ name: nextLayerName(layers), color: nextLayerColor(layers) }) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const ok = () => { if (f.name.trim()) onCreate(f.name.trim(), f.color) }
   return (
     <Modal open={!!open} onClose={onCancel} title={title}

@@ -77,6 +77,7 @@ class LayerResponse(LayerBase):
     is_complete: bool = False
     entity_count: int = 0
     draw_layers: list[dict[str, Any]] = Field(default_factory=list)
+    dl_counts: dict[str, int] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

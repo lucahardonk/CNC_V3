@@ -6,6 +6,7 @@ import { CncToggle, PROFILE_COLOR, ProfileOutline, SceneBase, StockMesh, Toolpat
 import Button from '../common/Button'
 import { errMsg, Export, Layers } from '../../services/api'
 import { effectiveCut } from '../cad/LayerParams'
+import { normalizeDrawLayers } from '../cad/drawLayers'
 import { useStore } from '../../store/store'
 
 // Limiti della macchina (GRBL 1.1h): velocità massima 1500 mm/min, usata anche per i rapidi G0
@@ -103,7 +104,7 @@ const fmtMin = (m) => { const s = Math.round(m * 60); return `${Math.floor(s / 6
 export default function SimulationView({ project, layer, drawLayerId = null, onBack, onLayerUpdated }) {
   const notify = useStore((s) => s.notify)
   const settings = useStore((s) => s.settings)
-  const dl = drawLayerId != null ? (layer.draw_layers || []).find((d) => d.id === drawLayerId) || { id: drawLayerId, name: drawLayerId === '0' ? 'Layer 0' : drawLayerId } : null
+  const dl = drawLayerId != null ? normalizeDrawLayers(layer.draw_layers).find((d) => d.id === drawLayerId) || { id: drawLayerId, name: drawLayerId } : null
   const [gcode, setGcode] = useState(drawLayerId != null ? '' : layer.gcode || '')
   const [busy, setBusy] = useState(false)
   const [warnings, setWarnings] = useState([])
@@ -172,8 +173,7 @@ export default function SimulationView({ project, layer, drawLayerId = null, onB
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg-panel px-3">
         <Button size="sm" variant="ghost" icon={ArrowLeft} onClick={onBack}>Vista 3D</Button>
         <div className="mx-2 h-5 w-px bg-line" />
-        <span className="text-sm text-gray-400">Simulazione layer:</span><span className="text-sm font-semibold text-white">{layer.name}</span>
-        {dl && <span className="flex items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 text-xs text-gray-300"><span className="h-2 w-2 rounded-full" style={{ background: dl.color || '#e5e7eb' }} />solo «{dl.name}»</span>}
+        <span className="text-sm text-gray-400">Simulazione layer:</span>{dl && <span className="h-2.5 w-2.5 rounded-full" style={{ background: dl.color || '#e5e7eb' }} />}<span className="text-sm font-semibold text-white" data-testid="sim-name">{dl ? dl.name : layer.name}</span>
         <span className="text-xs text-gray-500">· fresa Ø {dia} mm · {tl.moves.length} movimenti</span>
         <Button size="sm" variant="ghost" icon={RefreshCw} className="ml-auto" disabled={busy} onClick={compute}
           title="Ricalcola il percorso con il disegno e i parametri di taglio attuali del layer">{busy ? 'Calcolo…' : 'Ricalcola percorso'}</Button>

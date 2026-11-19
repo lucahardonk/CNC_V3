@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models import Layer, Project
-from routers.layers import layer_to_response
+from routers.layers import layer_to_response, unify_project_layers
 from schemas import ProjectCreate, ProjectDetail, ProjectResponse, ProjectUpdate
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -43,7 +43,7 @@ async def _get(db: AsyncSession, project_id: str) -> Project:
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
     p = await _get(db, project_id)
-    layers = [layer_to_response(l) for l in p.layers]
+    layers = [layer_to_response(l) for l in await unify_project_layers(db, project_id)]
     return ProjectDetail(**project_to_response(p, len(layers)).model_dump(), layers=layers)
 
 

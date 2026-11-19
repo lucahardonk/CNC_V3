@@ -151,9 +151,9 @@ async def export_layer_nc(layer_id: str, draw_layer_id: str | None = None, db: A
         res, scope = layer_result(project, l, draw_layer_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    name = l.name + (f"_{scope.get('name')}" if scope else "")
+    name = scope.get("name") if scope else l.name  # stesso nome del layer nel CAD e nella vista 3D
     log.info("Export .nc layer '%s': %d linee", name, res.line_count)
-    return _nc_response(res.gcode, f"layer_{_fname(name)}.nc")
+    return _nc_response(res.gcode, f"{_fname(name)}.nc")
 
 
 @router.get("/export/all/{project_id}")

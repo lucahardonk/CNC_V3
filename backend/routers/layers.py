@@ -1,11 +1,12 @@
 """CRUD layer, entities e generazione G-code."""
 import logging
+import re
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import read_json
@@ -24,11 +25,27 @@ CUT_DEFAULTS = {"tool_diameter": 3.175, "tool_type": "flat", "feed_rate": 600.0,
                 "z_safe": 5.0, "z_depth": -2.0, "z_pass_depth": 1.0}
 
 
+def _dl_of(e) -> str:
+    return str(((e.data or {}).get("_meta") or {}).get("dlayer") or "0")
+
+
+def dl_counts(l: Layer) -> dict[str, int]:
+    """Entità lavorabili per layer di disegno (i layer vuoti non si possono simulare/esportare)."""
+    ids = {d["id"] for d in draw_layers_of(l)}
+    out: dict[str, int] = {}
+    for e in l.entities or []:
+        if e.is_construction or e.type in IGNORED_TYPES or e.type == "bridge":
+            continue
+        dl = _dl_of(e) if _dl_of(e) in ids else "0"
+        out[dl] = out.get(dl, 0) + 1
+    return out
+
+
 def layer_to_response(l: Layer) -> LayerResponse:
     return LayerResponse(id=l.id, project_id=l.project_id, name=l.name, order_index=l.order_index,
                          tool_id=l.tool_id, operation=l.operation, params=l.params or {}, gcode=l.gcode,
                          is_complete=bool(l.is_complete), entity_count=len(l.entities or []),
-                         draw_layers=l.draw_layers or [],
+                         draw_layers=l.draw_layers or [], dl_counts=dl_counts(l),
                          **{k: getattr(l, k) if getattr(l, k) is not None else d for k, d in CUT_DEFAULTS.items()},
                          created_at=l.created_at, updated_at=l.updated_at)
 
@@ -48,14 +65,16 @@ async def _touch_project(db: AsyncSession, project_id: str):
 
 @router.get("/projects/{project_id}/layers", response_model=list[LayerResponse])
 async def list_layers(project_id: str, db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(Layer).where(Layer.project_id == project_id).order_by(Layer.order_index))).scalars().all()
-    return [layer_to_response(l) for l in rows]
+    return [layer_to_response(l) for l in await unify_project_layers(db, project_id)]
 
 
 @router.post("/projects/{project_id}/layers", response_model=LayerResponse, status_code=201)
 async def create_layer(project_id: str, body: LayerCreate, db: AsyncSession = Depends(get_db)):
     if not await db.get(Project, project_id):
         raise HTTPException(404, "Progetto non trovato")
+    existing = await unify_project_layers(db, project_id)
+    if existing:  # un solo disegno per pezzo: i layer sono i suoi layer di disegno
+        return layer_to_response(existing[0])
     idx = body.order_index
     if idx is None:
         idx = ((await db.execute(select(func.max(Layer.order_index)).where(Layer.project_id == project_id))).scalar() or -1) + 1
@@ -76,6 +95,8 @@ async def update_layer(layer_id: str, body: LayerUpdate, db: AsyncSession = Depe
     for k, v in body.model_dump(exclude_unset=True).items():
         if v is None and k in CUT_DEFAULTS:
             continue  # colonne NOT NULL: null = invariato
+        if k == "draw_layers" and v is not None:
+            v = unique_names(v)
         setattr(l, k, v)
     await _touch_project(db, l.project_id)
     await db.commit()
@@ -123,7 +144,7 @@ async def upsert_entities(layer_id: str, body: EntityBatch, db: AsyncSession = D
     return [EntityResponse.model_validate(e) for e in l.entities]
 
 
-DEFAULT_DRAW_LAYER = {"id": "0", "name": "Layer 0", "color": "#e5e7eb", "visible": True, "locked": False}
+DEFAULT_DRAW_LAYER = {"id": "0", "name": "Layer 1", "color": "#e5e7eb", "visible": True, "locked": False}
 
 
 def draw_layers_of(l: Layer) -> list[dict]:
@@ -132,6 +153,65 @@ def draw_layers_of(l: Layer) -> list[dict]:
     if not any(d["id"] == "0" for d in dls):
         dls.insert(0, dict(DEFAULT_DRAW_LAYER))
     return dls
+
+
+PALETTE = ["#e5e7eb", "#ef4444", "#f59e0b", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#a855f7", "#ec4899", "#f97316", "#84cc16", "#14b8a6"]
+
+
+def unique_names(dls: list[dict]) -> list[dict]:
+    """Nomi dei layer unici nel pezzo: i duplicati (o vuoti) prendono il primo "Layer N" libero."""
+    taken = {str(d.get("name") or "").strip().lower() for d in dls}
+    nums = [int(m.group(1)) for d in dls if (m := re.fullmatch(r"layer (\d+)", str(d.get("name") or "").strip().lower()))]
+    nxt, seen, out = max(nums, default=0) + 1, set(), []
+    for d in dls:
+        name = str(d.get("name") or "").strip()
+        if not name or name.lower() in seen:
+            while f"layer {nxt}" in taken or f"layer {nxt}" in seen:
+                nxt += 1
+            name = f"Layer {nxt}"
+        seen.add(name.lower())
+        out.append({**d, "name": name})
+    return out
+
+
+async def unify_project_layers(db: AsyncSession, project_id: str) -> list[Layer]:
+    """Migrazione "1 disegno con n layer": i layer di lavorazione in più vengono fusi nel primo.
+    Ogni loro layer di disegno diventa un layer del disegno unico con i parametri effettivi che aveva
+    (draw_layers[i].cut), le entità vengono spostate con gli stessi id (vincoli e quote restano validi).
+    Infine i nomi duplicati diventano unici. Nessuna geometria né parametro viene perso."""
+    q = select(Layer).where(Layer.project_id == project_id).order_by(Layer.order_index, Layer.created_at)
+    rows = list((await db.execute(q)).scalars().all())
+    if not rows:
+        return rows
+    target, changed = rows[0], False
+    # il Layer 0 di ogni layer di lavorazione prende il nome che l'utente vedeva nella vista 3D
+    base = lambda l, d: {**d, "name": l.name} if d["id"] == "0" and str(d.get("name") or "Layer 0") in ("Layer 0", "Layer 1") else d  # noqa: E731
+    dls = [base(target, d) if len(rows) > 1 else d for d in draw_layers_of(target)]
+    for src in rows[1:]:
+        idmap = {}
+        for d in map(lambda d: base(src, d), draw_layers_of(src)):
+            nid = "dl_" + uuid.uuid4().hex[:10]
+            idmap[d["id"]] = nid
+            cut = {k: v for k, v in effective_cut(src, d).items() if v is not None or k == "tool_id"}
+            used = {str(x.get("color") or "").lower() for x in dls}
+            color = d.get("color") if str(d.get("color") or "").lower() not in used else next((c for c in PALETTE if c not in used), d.get("color"))
+            dls.append({**{k: v for k, v in d.items() if k != "cut"}, "id": nid, "color": color, "cut": cut})
+        for e in list(src.entities):
+            dl = _dl_of(e)
+            data = dict(e.data or {})
+            data["_meta"] = {**(data.get("_meta") or {}), "dlayer": idmap.get(dl, idmap["0"])}
+            await db.execute(update(Entity).where(Entity.id == e.id).values(layer_id=target.id, data=data))
+        await db.execute(delete(Layer).where(Layer.id == src.id))
+        log.info("Migrazione: layer di lavorazione '%s' fuso in '%s' (%d layer di disegno)", src.name, target.name, len(idmap))
+        changed = True
+    named = unique_names(dls)
+    if changed or named != draw_layers_of(target):
+        target.draw_layers = named
+        if changed:
+            target.gcode, target.is_complete = None, False
+        await db.commit()
+        rows = list((await db.execute(q.execution_options(populate_existing=True))).scalars().all())
+    return rows
 
 
 def layer_entities(l: Layer, only: str | None = None):

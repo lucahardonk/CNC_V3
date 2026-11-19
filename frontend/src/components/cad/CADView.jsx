@@ -22,7 +22,7 @@ const FIELD_LABELS = { x1: 'X1', y1: 'Y1', x2: 'X2', y2: 'Y2', x: 'X', y: 'Y', w
 const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 'Larghezza asola:'], arc_start_end_radius: ['arcRadius', 'Raggio arco:'] }
 const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione', constraint: 'Vincolo di coincidenza', point: 'Punto' }
 
-export default function CADView({ project, layer, layers = [], onClose, onLayerUpdated, onStartCutting }) {
+export default function CADView({ project, layer, layers = [], initialDrawLayer, onClose, onLayerUpdated, onStartCutting }) {
   const { settings, tools, notify } = useStore()
   const [entities, setEntities] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -37,7 +37,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   const latest = useRef([])
   // ---- layer di disegno
   const [drawLayers, setDrawLayers] = useState(() => normalizeDrawLayers(layer.draw_layers))
-  const [activeDL, setActiveDL] = useState(DEFAULT_LAYER_ID)
+  const [activeDL, setActiveDL] = useState(initialDrawLayer || DEFAULT_LAYER_ID)
   const activeDLRef = useRef(DEFAULT_LAYER_ID)
   activeDLRef.current = drawLayers.some((l) => l.id === activeDL) ? activeDL : DEFAULT_LAYER_ID
   const dlTimer = useRef(null)
@@ -316,8 +316,8 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
           <input type="number" min="0.5" step="0.5" className="input w-16 py-1" value={options.bridgeWidth} onChange={(e) => setOptions({ ...options, bridgeWidth: Number(e.target.value) || 1 })} /> mm
         </label>
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="primary" icon={Play} disabled={!cutEntities.length} onClick={async () => { await save(); onStartCutting() }}
-            title="Salva e apri la simulazione 3D del percorso utensile con i parametri del layer">Simula</Button>
+          <Button size="sm" variant="primary" icon={Play} disabled={!cutEntities.length} onClick={async () => { await save(); onStartCutting(activeDLRef.current) }}
+            title="Salva e apri la simulazione 3D del layer corrente con i suoi parametri">Simula</Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
@@ -362,7 +362,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             </button>
             {paramsOpen && <>
               <p className="mb-2 text-[10px] leading-snug text-gray-500">
-                {activeDrawLayer.id === DEFAULT_LAYER_ID ? 'Layer 0 = parametri del layer di lavorazione.' : 'Percorso indipendente: solo le entità di questo layer, con questi parametri.'} Le modifiche si salvano e aggiornano da sole percorso e simulazione.
+                Percorso indipendente: solo le entità di questo layer, con questi parametri. Le modifiche si salvano e aggiornano da sole percorso e simulazione.
               </p>
               <LayerParams layer={layer} drawLayer={activeDrawLayer} material={project.material} onLayerUpdated={onLayerUpdated} {...cutProps} />
             </>}

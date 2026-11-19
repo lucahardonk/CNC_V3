@@ -14,7 +14,7 @@ export function normalizeDrawLayers(list) {
   }))
   const zero = out.find((l) => l.id === DEFAULT_LAYER_ID)
   const rest = out.filter((l) => l.id !== DEFAULT_LAYER_ID)
-  return [{ id: DEFAULT_LAYER_ID, name: 'Layer 0', color: DEFAULT_LAYER_COLOR, visible: true, locked: false, ...(zero || {}) }, ...rest]
+  return [{ id: DEFAULT_LAYER_ID, name: 'Layer 1', color: DEFAULT_LAYER_COLOR, visible: true, locked: false, ...(zero || {}) }, ...rest]
 }
 
 export const newLayerId = () => 'dl_' + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4)
@@ -22,4 +22,10 @@ export const newLayerId = () => 'dl_' + Math.random().toString(36).slice(2, 9) +
 export function nextLayerColor(layers) {
   const used = new Set(layers.map((l) => l.color.toLowerCase()))
   return LAYER_PALETTE.find((c) => !used.has(c)) || LAYER_PALETTE[layers.length % LAYER_PALETTE.length]
+}
+
+// Nome unico e progressivo nel pezzo: "Layer N" con N = massimo numero usato + 1
+export function nextLayerName(layers) {
+  const nums = layers.map((l) => /^layer (\d+)$/i.exec(String(l.name).trim())).filter(Boolean).map((m) => Number(m[1]))
+  return `Layer ${Math.max(0, ...nums) + 1}`
 }

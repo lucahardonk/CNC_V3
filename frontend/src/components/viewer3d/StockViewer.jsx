@@ -7,7 +7,8 @@ import { MATERIAL_COLORS, useStore } from '../../store/store'
 import { parseGcode } from '../../utils/gcodeParser'
 import { Download, Eye, EyeOff, Play } from 'lucide-react'
 import { errMsg, Export, Layers } from '../../services/api'
-import { arcSweep, layerColor, polar, primitives } from '../cad/geometry'
+import { arcSweep, polar, primitives } from '../cad/geometry'
+import { normalizeDrawLayers } from '../cad/drawLayers'
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1)
 
@@ -245,39 +246,31 @@ const Ico = ({ tip, onClick, disabled, children, green }) => (
 
 // Lista di TUTTI i layer del pezzo nella vista 3D: colore, visibilità, Play (simulazione solo di quel layer)
 // e Scarica .nc (G-code solo di quel layer). I layer di disegno interni sono percorsi indipendenti.
-function LayerList({ layers, activeLayerId, hidden, toggle, onSelect, onCut }) {
+function LayerList({ layers, activeLayerId, activeDl, hidden, toggle, onSelect, onCut }) {
   const notify = useStore((s) => s.notify)
   const [busy, setBusy] = useState(null)
   const download = async (lid, dl) => {
-    setBusy(`${lid}:${dl ?? ''}`)
+    setBusy(`${lid}:${dl}`)
     try { notify(`Scaricato ${await Export.layerNc(lid, dl)}`, 'success') } catch (e) { notify(`Download fallito: ${errMsg(e)}`, 'error') } finally { setBusy(null) }
   }
-  const row = (key, color, name, sub, lid, dl, empty) => {
-    const off = hidden.has(key)
-    return (
-      <div key={key} className={`flex items-center gap-1.5 py-0.5 ${dl != null ? 'pl-4' : ''}`}>
-        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
-        <span className={`min-w-0 flex-1 cursor-pointer truncate ${off ? 'text-gray-500 line-through' : dl == null && lid === activeLayerId ? 'text-accent' : ''}`}
-          onClick={() => onSelect?.(lid)} title={sub}>{name}</span>
-        <Ico tip={off ? 'Mostra nel 3D' : 'Nascondi nel 3D'} onClick={() => toggle(key)}>{off ? <EyeOff size={12} /> : <Eye size={12} />}</Ico>
-        <Ico green tip={`Simula solo ${dl != null ? 'il layer' : 'il layer di lavorazione'} «${name}»`} disabled={empty} onClick={() => onCut?.(lid, dl)}><Play size={12} /></Ico>
-        <Ico tip={`Scarica .nc solo di «${name}»`} disabled={empty || busy === `${lid}:${dl ?? ''}`} onClick={() => download(lid, dl)}><Download size={12} /></Ico>
-      </div>
-    )
-  }
+  // elenco piatto: un layer del disegno = una riga tagliabile (il contenitore non compare)
+  const rows = layers.flatMap((l) => normalizeDrawLayers(l.draw_layers).map((d) => ({ l, d, key: `${l.id}:${d.id}`, n: l.dl_counts?.[d.id] || 0 })))
   return (
     <div className="absolute right-3 top-3 max-h-[70%] w-64 overflow-y-auto rounded-md border border-line bg-black/75 px-3 py-2 text-xs text-gray-300" data-testid="layer-list-3d">
-      <div className="mb-1 font-semibold text-white">Layer del pezzo <span className="text-gray-500">{layers.length}</span></div>
-      {!layers.length && <div className="text-[11px] text-gray-500">Nessun layer: creane uno dal pannello a sinistra.</div>}
-      {layers.map((l, i) => {
-        const dls = (l.draw_layers || []).filter((d) => d.id && d.id !== '0')
-        const empty = !l.entity_count
+      <div className="mb-1 font-semibold text-white">Layer del pezzo <span className="text-gray-500">{rows.length}</span></div>
+      {!rows.length && <div className="text-[11px] text-gray-500">Nessun layer: creane uno dal pannello a sinistra.</div>}
+      {rows.map(({ l, d, key, n }) => {
+        const off = hidden.has(key)
+        const why = d.visible === false ? 'Layer nascosto nel CAD' : !n ? 'Layer vuoto: disegna qualcosa prima' : null
+        const active = l.id === activeLayerId && d.id === activeDl
         return (
-          <div key={l.id} className="border-t border-line/60 py-1 first-of-type:border-0">
-            {row(l.id, layerColor(i), l.name, l.gcode ? 'Percorso calcolato' : 'Percorso non ancora calcolato (premi Play)', l.id, undefined, empty)}
-            {dls.length > 0 && [{ id: '0', name: 'Layer 0', color: '#e5e7eb' }, ...l.draw_layers.filter((d) => d.id && d.id !== '0')]
-              .filter((d) => d.visible !== false)
-              .map((d) => row(`${l.id}:${d.id}`, d.color || '#e5e7eb', d.name || d.id, 'Layer di disegno: percorso indipendente con i suoi parametri', l.id, d.id, empty || hidden.has(l.id)))}
+          <div key={key} className="flex items-center gap-1.5 py-0.5" data-testid="layer-row-3d">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: d.color }} />
+            <span className={`min-w-0 flex-1 cursor-pointer truncate ${off || why ? 'text-gray-500' : active ? 'text-accent' : ''} ${off ? 'line-through' : ''}`}
+              onClick={() => onSelect?.(l.id, d.id)} title={why || `${n} entità`}>{d.name}</span>
+            <Ico tip={off ? 'Mostra nel 3D' : 'Nascondi nel 3D'} onClick={() => toggle(key)}>{off ? <EyeOff size={12} /> : <Eye size={12} />}</Ico>
+            <Ico green tip={why || `Simula solo «${d.name}»`} disabled={!!why} onClick={() => onCut?.(l.id, d.id)}><Play size={12} /></Ico>
+            <Ico tip={why || `Scarica .nc solo di «${d.name}»`} disabled={!!why || busy === key} onClick={() => download(l.id, d.id)}><Download size={12} /></Ico>
           </div>
         )
       })}
@@ -285,19 +278,19 @@ function LayerList({ layers, activeLayerId, hidden, toggle, onSelect, onCut }) {
   )
 }
 
-export default function StockViewer({ project, layers, activeLayerId, onSelect, onCut }) {
+export default function StockViewer({ project, layers, activeLayerId, activeDl, onSelect, onCut }) {
   const active = layers.find((l) => l.id === activeLayerId)
   const activeEnts = useLayerEntities(active?.id)
-  const profileEnts = useMemo(() => scopeEntities(activeEnts, active), [activeEnts, active])
-  // visibilità nel 3D: chiavi "<layer>" e "<layer>:<layer di disegno>" (solo vista, non cambia il G-code)
+  // visibilità nel 3D per layer: chiavi "<disegno>:<layer>" (solo vista, non cambia il G-code)
   const [hidden, setHidden] = useState(() => new Set())
+  const profileEnts = useMemo(() => scopeEntities(activeEnts, active).filter((e) => !hidden.has(`${active.id}:${e?.data?._meta?.dlayer || '0'}`)), [activeEnts, active, hidden])
   const toggle = (k) => setHidden((h) => { const n = new Set(h); if (n.has(k)) n.delete(k); else n.add(k); return n })
-  const visible = layers.filter((l) => l.gcode && !hidden.has(l.id))
+  const visible = layers.filter((l) => l.gcode)
   return (
     <div className="relative h-full w-full">
       <SceneBase project={project}>
         <StockMesh project={project} opacity={visible.length ? 0.85 : 1} />
-        {active && !hidden.has(active.id) && <ProfileOutline entities={profileEnts} />}
+        {active && <ProfileOutline entities={profileEnts} />}
         {visible.map((l) => <LayerToolpath key={l.id} layer={l} active={l.id === activeLayerId} hidden={hidden} />)}
       </SceneBase>
       <div className="pointer-events-none absolute left-3 top-3 space-y-1 rounded-md bg-black/60 px-3 py-2 text-xs text-gray-300">
@@ -311,7 +304,7 @@ export default function StockViewer({ project, layers, activeLayerId, onSelect, 
         <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 (layer attivo) <span className="ml-2 text-orange-400">━</span> taglio G1 (colore del layer di disegno) <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale</span>
       </div>
       <CncToggle />
-      <LayerList layers={layers} activeLayerId={activeLayerId} hidden={hidden} toggle={toggle} onSelect={onSelect} onCut={onCut} />
+      <LayerList layers={layers} activeLayerId={activeLayerId} activeDl={activeDl} hidden={hidden} toggle={toggle} onSelect={onSelect} onCut={onCut} />
     </div>
   )
 }
