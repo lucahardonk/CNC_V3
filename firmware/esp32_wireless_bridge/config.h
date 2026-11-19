@@ -6,7 +6,7 @@
 
 // ── WiFi Access Point ───────────────────────────────────────────────────────
 #define AP_SSID         "CNC-Remote"
-#define AP_PASSWORD     "cnc12345"       // min 8 caratteri; "" = rete aperta
+#define AP_PASSWORD     ""               // rete aperta (nessuna password): basta connettersi
 #define AP_CHANNEL      6
 #define AP_IP_1         192
 #define AP_IP_2         168

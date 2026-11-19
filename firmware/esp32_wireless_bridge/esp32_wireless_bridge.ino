@@ -217,8 +217,7 @@ void setupWiFi() {
   WiFi.mode(WIFI_AP);
   IPAddress ip(AP_IP_1, AP_IP_2, AP_IP_3, AP_IP_4);
   WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0));
-  const char* pw = strlen(AP_PASSWORD) >= 8 ? AP_PASSWORD : nullptr;
-  WiFi.softAP(AP_SSID, pw, AP_CHANNEL);
+  WiFi.softAP(AP_SSID, strlen(AP_PASSWORD) ? AP_PASSWORD : nullptr, AP_CHANNEL);   // "" = rete aperta
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
