@@ -3,9 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import LayerPanel from '../components/cad/LayerPanel'
 import CADView from '../components/cad/CADView'
 import StockViewer from '../components/viewer3d/StockViewer'
-import CuttingView from '../components/cutting/CuttingView'
-import JogController from '../components/cutting/JogController'
-import GRBLConsole from '../components/cutting/GRBLConsole'
+import SimulationView from '../components/cutting/SimulationView'
 import Modal from '../components/common/Modal'
 import Button from '../components/common/Button'
 import { errMsg, Layers, Projects } from '../services/api'
@@ -75,8 +73,8 @@ export default function Project() {
         {mode === 'cad' && active ? (
           <CADView key={active.id} project={project} layer={active} layers={layers} onClose={() => setMode('view')}
             onLayerUpdated={updateLayer} onStartCutting={() => setMode('cutting')} />
-        ) : mode === 'cutting' && active?.gcode ? (
-          <CuttingView key={active.id} project={project} layer={active} onBack={() => setMode('view')} onLayerUpdated={updateLayer} />
+        ) : mode === 'cutting' && active ? (
+          <SimulationView key={active.id} project={project} layer={active} onBack={() => setMode('view')} onLayerUpdated={updateLayer} />
         ) : (
           <>
             <StockViewer project={project} layers={layers} activeLayerId={activeId} />
@@ -88,15 +86,9 @@ export default function Project() {
           </>
         )}
       </div>
-      {mode === 'cutting' && active?.gcode && (
-        <aside className="flex w-[320px] shrink-0 flex-col gap-3 overflow-y-auto border-l border-line bg-bg-panel p-3">
-          <JogController />
-          <GRBLConsole />
-        </aside>
-      )}
       <Modal open={!!toDelete} onClose={() => setToDelete(null)} title="Elimina layer"
         footer={<><Button onClick={() => setToDelete(null)}>Annulla</Button><Button variant="danger" onClick={deleteLayer}>Elimina</Button></>}>
-        <p className="text-sm text-gray-300">Eliminare il layer <b className="text-white">{toDelete?.name}</b> con il suo disegno e G-code?</p>
+        <p className="text-sm text-gray-300">Eliminare il layer <b className="text-white">{toDelete?.name}</b> con il suo disegno e il percorso utensile?</p>
       </Modal>
     </div>
   )

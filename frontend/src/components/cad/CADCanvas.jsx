@@ -50,7 +50,7 @@ const lineLen = (l) => Math.hypot(l.data.x2 - l.data.x1, l.data.y2 - l.data.y1)
 export default function CADCanvas({
   entities, onChange, selected, setSelected, tool, setTool, stock, ui, options, onContextMenu, notify,
   onUndo, onRedo, onDelete, onDuplicate, maxToolDia = 8, otherLayerEntities = [], pickLine = null,
-  drawLayers = [], fitRequest = null, onMeasure = null, toolpath = null,
+  drawLayers = [], fitRequest = null, onMeasure = null, toolpath = null, overlay = null,
 }) {
   const wrap = useRef(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
@@ -1274,6 +1274,8 @@ export default function CADCanvas({
         {cursor && tool !== 'select' && (() => { const s = toS(cursor.p); return (
           <g stroke="#22c55e" strokeWidth={1} opacity={0.7}><line x1={s.x - 10} y1={s.y} x2={s.x + 10} y2={s.y} /><line x1={s.x} y1={s.y - 10} x2={s.x} y2={s.y + 10} /></g>) })()}
       </svg>
+      {/* anteprima testo/SVG da posizionare (render prop di CADView) */}
+      {overlay && view && overlay({ toS, toW, scale: v.s })}
 
       <div className="pointer-events-none absolute left-3 top-3 max-w-[45%] rounded-md bg-black/60 px-2.5 py-1 text-xs text-gray-300">{pasting ? `Incolla ${pasting.ents.filter((x) => !isConstraint(x)).length} entità: click per posizionare (Esc = annulla)` : pickLine ? 'Click sulla linea di riferimento per rendere parallela la linea selezionata (Esc = annulla)' : hintText}</div>
 

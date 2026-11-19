@@ -25,4 +25,18 @@ body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #0f0f0f
 .animate-fade { animation: fadeIn .15s ease-out; }
 .animate-pop { animation: popIn .18s ease-out; }
 
+/* Tooltip visivo (components/common/Tooltip.jsx) */
+.cnc-tooltip {
+  position: fixed; z-index: 80; pointer-events: none;
+  width: max-content; max-width: 280px; white-space: normal;
+  padding: 6px 10px; border-radius: 6px;
+  border: 1px solid #2f2f2f; border-left: 2px solid #f59e0b;
+  background: rgba(17, 17, 17, .97); color: #e5e7eb;
+  font-size: 12px; line-height: 1.35; font-weight: 400; letter-spacing: normal; text-transform: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  animation: fadeIn .12s ease-out;
+}
+.cnc-tooltip .tt-desc { display: block; color: #fbbf24; margin-top: 1px; }
+.cnc-tooltip .tt-help { display: block; color: #9ca3af; margin-top: 3px; font-size: 11px; }
+
 input[type=number]::-webkit-inner-spin-button { opacity: .4; }

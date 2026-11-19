@@ -60,7 +60,7 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
               onDrop={(e) => { e.preventDefault(); setDropOver(null); if (e.dataTransfer.types.includes(DRAG_MIME)) onAssignSelection(l.id) }}
               className={`group flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-1 transition ${dropOver === l.id ? 'border-blue-400 bg-blue-500/20'
                 : isActive ? 'border-accent/60 bg-accent/10' : 'border-transparent hover:bg-bg-hover'}`}>
-              <IconBtn tip={l.visible ? 'Nascondi (esclude anche dal G-code)' : 'Mostra'} onClick={() => onToggleVisible(l.id)}>
+              <IconBtn tip={l.visible ? 'Nascondi (esclude anche dal percorso utensile)' : 'Mostra'} onClick={() => onToggleVisible(l.id)}>
                 {l.visible ? <Eye size={14} /> : <EyeOff size={14} className="text-gray-600" />}
               </IconBtn>
               <IconBtn tip={l.locked ? 'Sblocca' : 'Blocca (non selezionabile né modificabile)'} onClick={() => onToggleLock(l.id)}>
@@ -103,7 +103,7 @@ export default function DrawLayerPanel({ layers, activeId, setActive, counts, se
           )
         })}
       </div>
-      <p className="px-3 pb-2 text-[10px] leading-snug text-gray-500">Layer corrente (evidenziato) = dove finiscono le nuove entità. Seleziona entità → «Sposta a layer…» (o tasto destro). ▶ = G-code solo di quel layer.</p>
+      <p className="px-3 pb-2 text-[10px] leading-snug text-gray-500">Layer corrente (evidenziato) = dove finiscono le nuove entità. Seleziona entità → «Sposta a layer…» (o tasto destro).</p>
 
       <NewLayerModal open={adding} layers={layers} selectionCount={selectionCount} onCancel={() => setAdding(false)}
         onCreate={(n, c) => { onAdd(n, c); setAdding(false) }} />

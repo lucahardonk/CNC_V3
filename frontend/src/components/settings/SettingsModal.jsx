@@ -78,6 +78,10 @@ export default function SettingsModal({ open, onClose }) {
         <div className="min-h-[340px]">
           {tab === 'machine' && (
             <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-accent/50 bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">Firmware target: GRBL 1.1h</span>
+                <span className="text-xs text-gray-500">Arduino Uno · 1600 step/mm · max 1500 mm/min · accel. 200 mm/s²</span>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Porta seriale" type="text" value={s.machine.port} onChange={(v) => set('machine', 'port', v)} tip="Device dell'Arduino GRBL dentro il container (mappato in docker-compose.yml)." />
                 <Field label="Baud rate" value={s.machine.baud_rate} onChange={(v) => set('machine', 'baud_rate', v)} tip="GRBL 1.1 usa 115200." />

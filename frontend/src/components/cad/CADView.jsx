@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Box, Check, Cog, Copy, Download, FileUp, Layers as LayersIcon, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
+import { ArrowLeft, Check, Copy, FileUp, Layers as LayersIcon, Play, Plus, Redo2, Ruler, Trash2, Undo2, Repeat } from 'lucide-react'
 import CADCanvas from './CADCanvas'
 import Toolbar from './Toolbar'
 import Modal from '../common/Modal'
 import Button from '../common/Button'
 import Tooltip from '../common/Tooltip'
-import { TOOL_TIPS } from '../settings/ToolBox'
-import { Dxf, errMsg, Export, Layers } from '../../services/api'
+import { Dxf, errMsg, Layers } from '../../services/api'
 import { OPERATION_NAMES, useStore } from '../../store/store'
 import { arcSweep, catmullRomPoints, isDim, rad, layerColor, lineConstrained, syncDims, translate, uid } from './geometry'
 import DrawLayerPanel, { NewLayerModal } from './DrawLayerPanel'
 import DxfImportModal from './DxfImportModal'
+import TextTool from './TextTool'
+import SvgImportTool from './SvgImportTool'
+import PlacementOverlay from './PlacementOverlay'
+import { entitiesBBox } from './vectorize'
 import { DEFAULT_LAYER_COLOR, DEFAULT_LAYER_ID, layerOf, newLayerId, normalizeDrawLayers } from './drawLayers'
 import { acceptGeometry, fillDimValues, isConstraint, packEnt, pruneRefs, refilletArc, solveCommit, unpackEnt } from './constraints'
 
@@ -19,7 +22,7 @@ const CTX_FIELDS = { fillet: ['filletRadius', 'R:'], slot_center: ['slotWidth', 
 const TYPE_NAMES = { line: 'Linea', rect: 'Rettangolo', circle: 'Cerchio', arc: 'Arco', bridge: 'Ponticello', dimension: 'Quota', dim_radial: 'Quota radiale', dim_angle: 'Quota angolare', ellipse: 'Ellisse', slot: 'Asola', spline: 'Spline', construction: 'Costruzione', constraint: 'Vincolo di coincidenza', point: 'Punto' }
 
 export default function CADView({ project, layer, layers = [], onClose, onLayerUpdated, onStartCutting }) {
-  const { settings, tools, materials, notify } = useStore()
+  const { settings, tools, notify } = useStore()
   const [entities, setEntities] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [selected, setSelected] = useState(new Set())
@@ -27,7 +30,6 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   const [options, setOptions] = useState({ filletRadius: 3, slotWidth: 5, arcRadius: 10, bridgeWidth: settings?.cutting?.bridge_width || 4 })
   const [saveState, setSaveState] = useState('saved')
   const [ctx, setCtx] = useState(null)
-  const [genOpen, setGenOpen] = useState(false)
   const [parallelFor, setParallelFor] = useState(null) // id della linea da rendere parallela
   const hist = useRef({ past: [], future: [] })
   const saveTimer = useRef(null)
@@ -40,15 +42,15 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   const dlTimer = useRef(null)
   const [newLayerFor, setNewLayerFor] = useState(false) // dialog "nuovo layer" dal menu contestuale
   const [assignOpen, setAssignOpen] = useState(false) // dialog "Sposta a layer…"
-  // ---- G-code per layer di disegno: '' = tutti i layer visibili
-  const [gcodeScope, setGcodeScope] = useState(() => layer.params?.draw_layer_id || '')
-  const [genDL, setGenDL] = useState(null) // layer di disegno della dialog Genera (null = tutti)
   const [canvasMeasure, setCanvasMeasure] = useState(null) // misura attiva nel canvas (strumento distanza)
   // ---- import DXF
   const fileRef = useRef(null)
   const [dxfData, setDxfData] = useState(null)
   const [dxfBusy, setDxfBusy] = useState(false)
   const [fitRequest, setFitRequest] = useState(null)
+  // ---- testo / SVG da incidere: pannello attivo e anteprima posizionabile nel canvas
+  const [vectorTool, setVectorTool] = useState(null) // 'text' | 'svg' | null
+  const [placement, setPlacement] = useState(null)
 
   useEffect(() => {
     Layers.entities(layer.id).then((list) => {
@@ -255,12 +257,18 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
   }
   const updateSelRaw = (k, val) => commit(latest.current.map((e) => (e.id === selEntity.id ? { ...e, data: { ...e.data, [k]: val } } : e)), { fixed: [selEntity.id] })
   const cutEntities = entities.filter((e) => !e.is_construction && !isDim(e) && e.type !== 'bridge')
-  const openGenerate = async (dlId) => {
-    await save()
-    setGenDL(dlId || null)
-    setGenOpen(true)
+  // testo/SVG convertiti in entità: finiscono sul layer di disegno attivo (commit)
+  const openVectorTool = (kind) => { setTool('select'); setSelected(new Set()); setVectorTool(kind) }
+  const insertVector = (ents, label) => {
+    const target = drawLayers.find((l) => l.id === activeDLRef.current)
+    if (target?.locked) return notify(`Il layer «${target.name}» è bloccato: sbloccalo o scegli un altro layer`, 'error')
+    commit([...latest.current, ...ents])
+    setSelected(new Set(ents.map((e) => e.id)))
+    const bb = entitiesBBox(ents)
+    if (bb) setFitRequest({ n: Date.now(), bbox: bb })
+    setVectorTool(null); setPlacement(null)
+    notify(`Inserite ${ents.length} entità da ${label} nel layer «${target?.name || 'corrente'}»`, 'success')
   }
-  const scopeLayer = drawLayers.find((l) => l.id === gcodeScope && l.visible)
   const openAssign = () => (selCount ? setAssignOpen(true) : notify('Seleziona prima una o più entità nel canvas'))
   const maxToolDia = useMemo(() => Math.max(3, ...tools.map((t) => Number(t.diameter) || 0)), [tools])
 
@@ -287,19 +295,13 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
           <input type="number" min="0.5" step="0.5" className="input w-16 py-1" value={options.bridgeWidth} onChange={(e) => setOptions({ ...options, bridgeWidth: Number(e.target.value) || 1 })} /> mm
         </label>
         <div className="ml-auto flex items-center gap-2">
-          {layer.gcode && <Button size="sm" variant="outline" icon={Play} onClick={async () => { await save(); onStartCutting() }}>Taglia</Button>}
-          <label className="flex items-center gap-1.5 text-xs text-gray-400" title="Layer di disegno usato da «Genera Percorso» (▶ nel pannello Layer genera direttamente un singolo layer)">G-code:
-            <span className="h-3 w-3 shrink-0 rounded-sm border border-black/40" style={{ background: scopeLayer?.color || 'conic-gradient(#ef4444,#eab308,#22c55e,#3b82f6,#ef4444)' }} />
-            <select className="input w-40 py-1 text-xs" value={scopeLayer ? gcodeScope : ''} onChange={(e) => setGcodeScope(e.target.value)}>
-              <option value="">Tutti i layer visibili</option>
-              {drawLayers.filter((l) => l.visible).map((l) => <option key={l.id} value={l.id} disabled={!dlCounts[l.id]}>Solo: {l.name} ({dlCounts[l.id] || 0})</option>)}
-            </select>
-          </label>
-          <Button size="sm" variant="primary" icon={Cog} disabled={!cutEntities.length} onClick={() => openGenerate(scopeLayer?.id)}>{scopeLayer ? `Genera «${scopeLayer.name}»` : 'Genera Percorso'}</Button>
+          <Button size="sm" variant="primary" icon={Play} disabled={!cutEntities.length} onClick={async () => { await save(); onStartCutting() }}
+            title="Salva e apri la simulazione 3D del percorso utensile con i parametri del layer">Simula</Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
-        <Toolbar tool={tool} setTool={setTool} onCopy={duplicate} canCopy={selected.size > 0} hasSelection={selected.size > 0} />
+        <Toolbar tool={tool} setTool={(t) => { setVectorTool(null); setTool(t) }} onCopy={duplicate} canCopy={selected.size > 0} hasSelection={selected.size > 0}
+          onText={() => openVectorTool('text')} onSvg={() => openVectorTool('svg')} vectorTool={vectorTool} />
         <div className="relative min-w-0 flex-1">
           {CTX_FIELDS[tool] && (
             <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-bg-card/95 px-3 py-1.5 text-xs text-gray-300 shadow-lg">
@@ -314,8 +316,13 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
               stock={{ x: project.stock_x, y: project.stock_y }} ui={settings?.ui} options={options} notify={notify}
               onContextMenu={(e, pos) => setCtx({ entity: e, ...pos })} onUndo={undo} onRedo={redo} onDelete={del} onDuplicate={duplicate} maxToolDia={maxToolDia} otherLayerEntities={otherLayerEntities} pickLine={parallelFor ? onPickParallel : null}
               drawLayers={drawLayers} fitRequest={fitRequest} onMeasure={setCanvasMeasure}
-              toolpath={{ diameter: Number(layer.tool_diameter) || 0, operation: layer.operation }} />
+              toolpath={{ diameter: Number(layer.tool_diameter) || 0, operation: layer.operation }}
+              overlay={placement ? (view) => <PlacementOverlay view={view} {...placement} /> : null} />
           )}
+          {vectorTool === 'text' && <TextTool center={{ x: 0, y: 0 }} notify={notify} setPlacement={setPlacement}
+            onClose={() => { setVectorTool(null); setPlacement(null) }} onConfirm={insertVector} />}
+          {vectorTool === 'svg' && <SvgImportTool center={{ x: 0, y: 0 }} stock={{ x: project.stock_x, y: project.stock_y }} notify={notify} setPlacement={setPlacement}
+            onClose={() => { setVectorTool(null); setPlacement(null) }} onConfirm={insertVector} />}
         </div>
         <aside className="flex w-72 shrink-0 flex-col border-l border-line bg-bg-panel text-sm">
           <DrawLayerPanel layers={drawLayers} activeId={activeDLRef.current} setActive={setActiveDL} counts={dlCounts} selectionCount={selCount}
@@ -323,7 +330,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
             onColor={(id, color) => updateDrawLayers((ls) => ls.map((x) => (x.id === id ? { ...x, color } : x)))}
             onRename={(id, name) => updateDrawLayers((ls) => ls.map((x) => (x.id === id ? { ...x, name } : x)))}
             onAdd={addDrawLayer} onDelete={deleteDrawLayer} onAssignSelection={assignSelection}
-            onOpenAssign={openAssign} onGenerateLayer={(id) => openGenerate(id)} gcodeLayerId={layer.gcode ? layer.params?.draw_layer_id : null} />
+            onOpenAssign={openAssign} />
           <div className="min-h-0 flex-1 overflow-y-auto border-t border-line p-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-gray-400"><Ruler size={13} /> Proprietà / Misure</div>
           {canvasMeasure?.distance != null ? (
@@ -404,7 +411,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
                   <li><span className="kbd">Ctrl</span>/<span className="kbd">Shift</span>+click → aggiungi/rimuovi dalla selezione</li>
                   <li><span className="kbd">Esc</span> → deseleziona tutto</li>
                   <li><b className="text-gray-300">Sposta a layer…</b> (pannello Layer/Proprietà o tasto destro) → cambia layer alla selezione</li>
-                  <li><b className="text-gray-300">▶</b> accanto a un layer → G-code solo di quel layer</li>
+                  <li><b className="text-gray-300">Testo</b> / <b className="text-gray-300">SVG</b> (toolbar) → percorsi di incisione sul layer corrente</li>
                   <li><b className="text-gray-300">Misura distanza</b> (toolbar, <span className="kbd">K</span>): click su A poi su B</li>
                   <li><b className="text-gray-300">Importa DXF</b> in alto per caricare un disegno</li>
                 </ul>
@@ -459,157 +466,7 @@ export default function CADView({ project, layer, layers = [], onClose, onLayerU
       <NewLayerModal open={newLayerFor} layers={drawLayers} selectionCount={selCount} title="Nuovo layer per la selezione"
         onCancel={() => setNewLayerFor(false)} onCreate={(n, c) => { const id = addDrawLayer(n, c); assignSelection(id, n); setNewLayerFor(false) }} />
       {dxfData && <DxfImportModal data={dxfData} stock={{ x: project.stock_x, y: project.stock_y }} onClose={() => setDxfData(null)} onConfirm={confirmDxf} />}
-
-      <GenerateModal open={genOpen} onClose={() => setGenOpen(false)} project={project} layer={layer} tools={tools} materials={materials}
-        settings={settings} hasBridges={entities.some((e) => e.type === 'bridge')} drawLayer={drawLayers.find((l) => l.id === genDL) || null}
-        drawLayerCount={genDL ? dlCounts[genDL] || 0 : null}
-        onDone={(l) => onLayerUpdated(l)} onStartCutting={() => { setGenOpen(false); onStartCutting() }}
-        onView3D={async () => { setGenOpen(false); await save(); onClose() }} />
     </div>
-  )
-}
-
-function GenerateModal({ open, onClose, project, layer, tools, materials, settings, hasBridges, onDone, onStartCutting, onView3D, drawLayer, drawLayerCount }) {
-  const notify = useStore((s) => s.notify)
-  const mat = materials[project.material] || {}
-  const prev = layer.params || {}
-  const [f, setF] = useState({})
-  const [result, setResult] = useState(null)
-  const [busy, setBusy] = useState(false)
-
-  const defaultsFor = (toolId) => {
-    const t = tools.find((x) => x.id === toolId) || {}
-    const pick = (k) => { const c = [mat[k], t[k]].filter((v) => v != null).map(Number); return c.length ? Math.min(...c) : undefined }
-    return {
-      feed_rate: pick('feed_rate'), plunge_rate: pick('plunge_rate'), spindle_rpm: t.spindle_rpm || mat.spindle_rpm,
-      step_over: pick('step_over'), depth_per_pass: mat.depth_per_pass || 1,
-    }
-  }
-
-  useEffect(() => {
-    if (!open) return
-    const toolId = layer.tool_id || prev.tool_id || tools[0]?.id
-    setResult(null)
-    setF({
-      operation: layer.operation || 'profile_outside', tool_id: toolId,
-      pocket_direction: prev.pocket_direction || 'horizontal',
-      bridge_height: settings?.cutting?.bridge_height ?? 1.5, ...defaultsFor(toolId),
-      ...(prev.tool_id === toolId ? { plunge_rate: prev.plunge_rate, step_over: prev.step_over } : {}),
-      // parametri di taglio propri del layer (pannello Layer): prevalgono su materiale/utensile
-      feed_rate: layer.feed_rate ?? 600, spindle_rpm: layer.spindle_rpm ?? 12000,
-      depth_total: Math.abs(layer.z_depth ?? -2), depth_per_pass: layer.z_pass_depth ?? 1, safe_height: layer.z_safe ?? 5,
-    })
-  }, [open, drawLayer?.id]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
-  const setTool = (id) => setF((p) => ({ ...p, tool_id: id, ...defaultsFor(id) }))
-  const tool = tools.find((t) => t.id === f.tool_id)
-
-  const makeBody = () => {
-    const body = { ...f, draw_layer_id: drawLayer?.id || null }
-    for (const k of ['depth_total', 'depth_per_pass', 'feed_rate', 'plunge_rate', 'spindle_rpm', 'step_over', 'safe_height', 'bridge_height']) body[k] = Number(body[k])
-    return body
-  }
-  const generate = async () => {
-    setBusy(true)
-    try {
-      const r = await Layers.generate(layer.id, makeBody())
-      setResult(r)
-      onDone(r.layer)
-      notify(drawLayer ? `G-code generato solo per il layer «${drawLayer.name}»` : 'G-code generato', 'success')
-    } catch (e) { notify(errMsg(e), 'error') } finally { setBusy(false) }
-  }
-  const download = async () => {
-    try {
-      const { blob, filename } = await Export.layerGcodeFile(layer.id, makeBody())
-      const url = URL.createObjectURL(blob)
-      const a = Object.assign(document.createElement('a'), { href: url, download: filename })
-      document.body.appendChild(a); a.click(); a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
-    } catch (e) {
-      let msg = errMsg(e)
-      if (e?.response?.data instanceof Blob) { try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* noop */ } }
-      notify(`Download fallito: ${msg}`, 'error')
-    }
-  }
-
-  const num = (k, label, step = 0.1, tip) => (
-    <div>
-      <Tooltip text={tip}><span className={`label ${tip ? 'cursor-help' : ''}`}>{label}</span></Tooltip>
-      <input type="number" step={step} className="input" value={f[k] ?? ''} onChange={(e) => set(k, e.target.value)} />
-    </div>
-  )
-
-  return (
-    <Modal open={open} onClose={onClose} title={drawLayer ? `Genera G-code — layer «${drawLayer.name}»` : 'Genera percorso utensile'} width="max-w-3xl"
-      footer={<>
-        <Button onClick={onClose}>Chiudi</Button>
-        <Button variant="outline" icon={Download} disabled={busy || !f.tool_id} onClick={download} title="Scarica il file .nc con i parametri attuali (POST /api/export/layer/…)">Scarica .nc</Button>
-        {result && <Button variant="outline" icon={Box} onClick={onView3D}>Vedi nel 3D</Button>}
-        {result && <Button variant="outline" icon={Play} onClick={onStartCutting}>Vai al taglio</Button>}
-        <Button variant="primary" icon={Cog} disabled={busy || !f.tool_id} onClick={generate}>{busy ? 'Generazione…' : 'Genera G-code'}</Button>
-      </>}>
-      <div className="space-y-4">
-        <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${drawLayer ? 'border-accent/50 bg-accent/10 text-gray-200' : 'border-line bg-bg text-gray-400'}`}>
-          {drawLayer ? (<>
-            <span className="h-3.5 w-3.5 shrink-0 rounded-sm border border-black/40" style={{ background: drawLayer.color }} />
-            <span>Solo le entità visibili del layer di disegno <b className="text-white">{drawLayer.name}</b> ({drawLayerCount} entità). Gli altri layer sono esclusi.</span>
-          </>) : (<><LayersIcon size={14} /><span>Tutti i layer di disegno visibili (i layer nascosti sono esclusi). Nel viewer 3D ogni layer ha il suo colore.</span></>)}
-        </div>
-        <div>
-          <span className="label">Operazione</span>
-          <div className="grid grid-cols-4 gap-2">
-            {Object.entries(OPERATION_NAMES).map(([k, l]) => (
-              <button key={k} onClick={() => set('operation', k)}
-                className={`rounded-md border px-2 py-2 text-xs transition ${f.operation === k ? 'border-accent bg-accent/10 text-white' : 'border-line text-gray-400 hover:border-gray-500'}`}>{l}</button>
-            ))}
-          </div>
-          <p className="mt-1.5 text-xs text-gray-500">
-            {{ profile_outside: 'La fresa gira all\'esterno del contorno: il pezzo mantiene le dimensioni disegnate.', profile_inside: 'La fresa gira all\'interno del contorno: il foro mantiene le dimensioni disegnate.', profile_on: 'Il centro fresa segue esattamente la linea (incisioni, linee aperte).', pocket: 'Svuota tutta l\'area chiusa fino alla profondità indicata.' }[f.operation]}
-          </p>
-        </div>
-        {f.operation === 'pocket' && (
-          <div>
-            <span className="label">Direzione riempimento</span>
-            <select className="input" value={f.pocket_direction} onChange={(e) => set('pocket_direction', e.target.value)}>
-              <option value="horizontal">Orizzontale (zig-zag X)</option>
-              <option value="vertical">Verticale (zig-zag Y)</option>
-              <option value="contour">Contorno (offset concentrici)</option>
-            </select>
-          </div>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <span className="label">Utensile</span>
-            <select className="input" value={f.tool_id || ''} onChange={(e) => setTool(e.target.value)}>
-              {tools.map((t) => <option key={t.id} value={t.id}>{t.name} (Ø{t.diameter})</option>)}
-            </select>
-          </div>
-          {num('depth_total', `Profondità totale (mm) · stock ${project.stock_z}`, 0.1, 'Profondità finale del taglio dalla superficie (Z0). Per tagliare passante usa lo spessore stock + 0.2 mm (con piano sacrificale).')}
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          {num('feed_rate', 'Feed (mm/min)', 10, TOOL_TIPS.feed_rate)}
-          {num('plunge_rate', 'Plunge (mm/min)', 10, TOOL_TIPS.plunge_rate)}
-          {num('spindle_rpm', 'RPM', 500, TOOL_TIPS.spindle_rpm)}
-          {num('depth_per_pass', 'Prof. passata (mm)', 0.1, 'Profondità asportata per ogni passata in Z.')}
-          {num('step_over', 'Step-over (0-1)', 0.05, TOOL_TIPS.step_over)}
-          {num('safe_height', 'Altezza sicurezza', 0.5, 'Quota Z per i movimenti rapidi.')}
-          {hasBridges && f.operation !== 'pocket' && num('bridge_height', 'Altezza ponticelli', 0.1, 'Materiale lasciato sotto i ponticelli (dal fondo del taglio).')}
-        </div>
-        <p className="text-xs text-gray-500">Feed, RPM, profondità, passata e Z sicurezza sono quelli del layer <b className="text-gray-300">{layer.name}</b>; generando il G-code i valori usati vengono salvati nel layer. Plunge e step-over da materiale <b className="text-gray-300">{mat.name}</b> / utensile <b className="text-gray-300">{tool?.name}</b>.</p>
-        {result && (
-          <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
-            <div className="grid grid-cols-4 gap-2 text-center">
-              <Stat k="Linee" v={result.line_count} />
-              <Stat k="Taglio" v={`${result.cut_length_mm} mm`} />
-              <Stat k="Percorso tot." v={`${result.path_length_mm} mm`} />
-              <Stat k="Tempo stimato" v={`${result.estimated_time_min} min`} />
-            </div>
-            {result.warnings.map((w) => <div key={w} className="mt-2 text-xs text-yellow-300">⚠ {w}</div>)}
-          </div>
-        )}
-      </div>
-    </Modal>
   )
 }
 
@@ -620,8 +477,6 @@ function pointName(r, entities) {
   const n = PT_NAMES[r.ref] ?? (/^v\d/.test(r.ref) ? 'vertice ' + (+r.ref.slice(1) + 1) : /^m\d/.test(r.ref) ? 'punto medio lato ' + (+r.ref.slice(1) + 1) : /^i\d/.test(r.ref) ? 'punto ' + (+r.ref.slice(1) + 1) : r.ref)
   return `${TYPE_NAMES[e?.type] || '?'} ${n}`.trim()
 }
-
-const Stat = ({ k, v }) => (<div><div className="text-[10px] uppercase text-gray-400">{k}</div><div className="font-mono font-semibold text-white">{v}</div></div>)
 
 // ---------------------------------------------------------------- misure
 const mm = (v) => `${(+v).toFixed(2)} mm`

@@ -1,23 +1,37 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
-export default function Tooltip({ text, children, side = 'top', className = '' }) {
-  const [show, setShow] = useState(false)
+// Tooltip visivo (classe .cnc-tooltip) renderizzato in un portal con posizione fissa:
+// non viene tagliato da contenitori con overflow (es. la Toolbar) e compare dopo un piccolo ritardo.
+export default function Tooltip({ text, children, side = 'top', className = '', delay = 350 }) {
+  const [pos, setPos] = useState(null)
+  const ref = useRef(null)
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
   if (!text) return children
-  const pos = {
-    top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
-    bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
-    right: 'left-full top-1/2 -translate-y-1/2 ml-2',
-    left: 'right-full top-1/2 -translate-y-1/2 mr-2',
-  }[side]
+
+  const enter = () => {
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => {
+      const r = ref.current?.getBoundingClientRect()
+      if (!r) return
+      const p = {
+        top: { left: r.left + r.width / 2, top: r.top - 8, transform: 'translate(-50%, -100%)' },
+        bottom: { left: r.left + r.width / 2, top: r.bottom + 8, transform: 'translateX(-50%)' },
+        right: { left: r.right + 8, top: r.top + r.height / 2, transform: 'translateY(-50%)' },
+        left: { left: r.left - 8, top: r.top + r.height / 2, transform: 'translate(-100%, -50%)' },
+      }[side]
+      setPos(p)
+    }, delay)
+  }
+  const leave = () => { clearTimeout(timer.current); setPos(null) }
+
   return (
-    <span className={`relative inline-flex ${className}`} onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+    <span ref={ref} className={`relative inline-flex ${className}`} onMouseEnter={enter} onMouseLeave={leave} onMouseDown={leave}>
       {children}
-      {show && (
-        <span className={`animate-fade pointer-events-none absolute z-[60] w-max max-w-[260px] whitespace-normal rounded-md border border-line
-          bg-[#111] px-2.5 py-1.5 text-xs font-normal normal-case leading-snug tracking-normal text-gray-200 shadow-xl ${pos}`}>
-          {text}
-        </span>
-      )}
+      {pos && createPortal(
+        <span role="tooltip" style={pos} className={`cnc-tooltip cnc-tooltip-${side}`}>{text}</span>,
+        document.body)}
     </span>
   )
 }

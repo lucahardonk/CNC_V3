@@ -2,12 +2,86 @@ import { useEffect, useMemo, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Edges, GizmoHelper, GizmoViewport, Grid, Html, Line, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
+import { create } from 'zustand'
 import { MATERIAL_COLORS, useStore } from '../../store/store'
 import { parseGcode } from '../../utils/gcodeParser'
 import { Layers } from '../../services/api'
 import { arcSweep, polar, primitives } from '../cad/geometry'
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1)
+
+// ---------------------------------------------------------------- overlay macchina CNC
+// Gantry in alluminio: area di lavoro X 1000 × Y 1000 × Z 300 mm, origine pezzo = centro XY della macchina.
+export const CNC_WORK = { x: 1000, y: 1000, z: 300 }
+const CNC_KEY = 'cnc_v3_show_cnc'
+// stato condiviso (viewer 3D, anteprima layer, simulazione) e ricordato nel browser
+export const useCncOverlay = create((set) => ({
+  showCnc: (() => { try { return localStorage.getItem(CNC_KEY) !== '0' } catch { return true } })(),
+  setShowCnc: (v) => { try { localStorage.setItem(CNC_KEY, v ? '1' : '0') } catch { /* noop */ } set({ showCnc: v }) },
+}))
+
+export function CncToggle({ className = 'left-3 bottom-12' }) {
+  const { showCnc, setShowCnc } = useCncOverlay()
+  return (
+    <label className={`absolute z-10 flex cursor-pointer items-center gap-2 rounded-md border border-line bg-black/70 px-2.5 py-1 text-xs text-gray-300 hover:text-white ${className}`}
+      title="Mostra/nascondi il volume di lavoro della CNC (1000×1000×300 mm) e il gantry">
+      <input type="checkbox" className="accent-green-500" checked={showCnc} onChange={(e) => setShowCnc(e.target.checked)} /> Mostra CNC
+    </label>
+  )
+}
+
+const ALU = '#c0c4cc'
+const AluBox = ({ args, position, opacity = 0.12 }) => (
+  <mesh position={position}>
+    <boxGeometry args={args} />
+    <meshStandardMaterial color={ALU} metalness={0.7} roughness={0.35} transparent opacity={opacity} depthWrite={false} />
+    <Edges color={ALU} transparent opacity={Math.min(1, opacity * 2.5)} />
+  </mesh>
+)
+
+// Volume di lavoro + gantry semplificato. Il piano macchina coincide con il fondo del pezzo (z = -stock_z).
+export function CncOverlay({ project }) {
+  const { x: W, y: D, z: H } = CNC_WORK
+  const z0 = -project.stock_z, zTop = z0 + H
+  const gy = D / 2 - 160 // gantry "parcheggiato" verso il fondo per non coprire il pezzo
+  const beamZ = zTop + 50
+  const sideX = W / 2 + 45
+  return (
+    <group renderOrder={-2}>
+      {/* volume di lavoro: wireframe grigio (opacity 0.15) e spigoli evidenziati */}
+      <mesh position={[0, 0, z0 + H / 2]}>
+        <boxGeometry args={[W, D, H, 10, 10, 3]} />
+        <meshBasicMaterial color="#9ca3af" wireframe transparent opacity={0.15} depthWrite={false} />
+        <Edges color="#d1d5db" transparent opacity={0.5} />
+      </mesh>
+      {/* piano macchina */}
+      <mesh position={[0, 0, z0 - 0.6]}>
+        <boxGeometry args={[W + 60, D + 60, 1]} />
+        <meshBasicMaterial color="#6b7280" transparent opacity={0.06} depthWrite={false} />
+      </mesh>
+      {/* guide asse Y (estrusi laterali) */}
+      <AluBox args={[40, D + 120, 40]} position={[-sideX, 0, z0 - 20]} opacity={0.1} />
+      <AluBox args={[40, D + 120, 40]} position={[sideX, 0, z0 - 20]} opacity={0.1} />
+      {/* montanti verticali laterali del gantry */}
+      <AluBox args={[24, 140, beamZ + 40 - z0]} position={[-sideX, gy, (z0 + beamZ + 40) / 2]} opacity={0.12} />
+      <AluBox args={[24, 140, beamZ + 40 - z0]} position={[sideX, gy, (z0 + beamZ + 40) / 2]} opacity={0.12} />
+      {/* traversa (asse X) */}
+      <AluBox args={[W + 114, 60, 80]} position={[0, gy, beamZ]} opacity={0.1} />
+      {/* carrello Z sulla traversa + mandrino */}
+      <AluBox args={[130, 24, 200]} position={[0, gy - 45, beamZ - 40]} opacity={0.14} />
+      <mesh position={[0, gy - 85, beamZ - 120]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[34, 34, 170, 28]} />
+        <meshStandardMaterial color={ALU} metalness={0.8} roughness={0.3} transparent opacity={0.13} depthWrite={false} />
+      </mesh>
+      {/* assi macchina */}
+      <Line points={[[-W / 2, -D / 2, z0], [W / 2, -D / 2, z0]]} color="#ef4444" lineWidth={1.5} transparent opacity={0.55} />
+      <Line points={[[-W / 2, -D / 2, z0], [-W / 2, D / 2, z0]]} color="#22c55e" lineWidth={1.5} transparent opacity={0.55} />
+      <Html position={[W / 2 + 25, -D / 2, z0]} center className="pointer-events-none whitespace-nowrap text-[11px] font-semibold text-red-300/80">X macchina →</Html>
+      <Html position={[-W / 2, D / 2 + 30, z0]} center className="pointer-events-none whitespace-nowrap text-[11px] font-semibold text-green-300/80">↑ Y macchina</Html>
+      <Html position={[-W / 2 - 20, -D / 2 - 20, zTop]} center className="pointer-events-none whitespace-nowrap text-[10px] text-gray-400/80">Area {W}×{D}×{H} mm</Html>
+    </group>
+  )
+}
 
 const MAT_PROPS = { softwood: { roughness: 0.9, metalness: 0 }, hardwood: { roughness: 0.85, metalness: 0 }, aluminum: { roughness: 0.3, metalness: 0.8 } }
 
@@ -143,7 +217,9 @@ export function useLayerEntities(layerId) {
 }
 
 export function SceneBase({ project, children, cameraDist }) {
-  const d = cameraDist || Math.max(project.stock_x, project.stock_y) * 1.1 + 50
+  const showCnc = useCncOverlay((s) => s.showCnc)
+  const base = Math.max(project.stock_x, project.stock_y) * 1.1 + 50
+  const d = cameraDist || (showCnc ? Math.max(base, 900) : base)
   return (
     <Canvas shadows camera={{ position: [d * 0.6, -d * 0.9, d * 0.8], fov: 45, near: 0.5, far: 20000, up: [0, 0, 1] }} gl={{ antialias: true }}>
       <color attach="background" args={['#141414']} />
@@ -153,6 +229,7 @@ export function SceneBase({ project, children, cameraDist }) {
       <Grid rotation={[Math.PI / 2, 0, 0]} position={[0, 0, -project.stock_z - 0.05]} args={[2000, 2000]} cellSize={10} sectionSize={50}
         cellColor="#262626" sectionColor="#3a3a3a" fadeDistance={d * 4} infiniteGrid />
       <Axes project={project} />
+      {showCnc && <CncOverlay project={project} />}
       {children}
       <OrbitControls makeDefault target={[0, 0, -project.stock_z / 2]} enableDamping dampingFactor={0.12} />
       <GizmoHelper alignment="bottom-right" margin={[70, 70]}><GizmoViewport axisColors={['#ef4444', '#22c55e', '#3b82f6']} labelColor="white" /></GizmoHelper>
@@ -190,6 +267,7 @@ export default function StockViewer({ project, layers, activeLayerId }) {
         Sinistro: ruota · Destro: pan · Rotella: zoom
         <span className="ml-3"><span className="text-yellow-400">━</span> rapido G0 <span className="ml-2 text-orange-400">━</span> taglio G1{groups.length > 0 && ' (colore del layer)'} <span className="ml-2" style={{ color: PROFILE_COLOR }}>━</span> profilo originale</span>
       </div>
+      <CncToggle />
       {active?.gcode && <ToolpathLayerLegend groups={groups} hidden={hiddenGroups} setHidden={setHiddenGroups} scopeName={scopeName} />}
     </div>
   )
